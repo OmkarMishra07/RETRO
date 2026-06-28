@@ -1,15 +1,163 @@
 import express from "express";
 import http from "http";
 import https from "https";
+import { request as nodeRequest } from "http";
+import { request as httpRequest } from "https";
 import { Server } from "socket.io";
 import cors from "cors";
 import fs from "fs";
 import path from "path";
+import vm from "vm";
 import { fileURLToPath } from "url";
 import dotenv from "dotenv";
 import ytSearch from "yt-search";
+import { Innertube, UniversalCache, Platform } from "youtubei.js";
+
+// Inject JS evaluator for youtubei.js YTMUSIC deciphering in Node.js
+Platform.shim.eval = (data: any) => {
+  return vm.runInNewContext('function run() { ' + data.output + ' } run();');
+};
 
 dotenv.config();
+
+let ytClient: Innertube | null = null;
+async function getYT() {
+  if (!ytClient) ytClient = await Innertube.create();
+  return ytClient;
+}
+
+function isIndianQuery(query: string): boolean {
+  const indianLangs = /[\u0900-\u097F]/;
+  const indianKeywords = /bollywood|hindi|punjabi|tamil|telugu|saavn|jiosaavn/i;
+  return indianLangs.test(query) || indianKeywords.test(query);
+}
+
+// Concurrency Queue to prevent CPU spike and YouTube rate limits during multiple parallel decipherings
+class ConcurrencyQueue {
+  private activeCount = 0;
+  private queue: (() => void)[] = [];
+  private maxConcurrency: number;
+
+  constructor(maxConcurrency: number) {
+    this.maxConcurrency = maxConcurrency;
+  }
+
+  async run<T>(fn: () => Promise<T>): Promise<T> {
+    if (this.activeCount >= this.maxConcurrency) {
+      await new Promise<void>((resolve) => this.queue.push(resolve));
+    }
+    this.activeCount++;
+    try {
+      return await fn();
+    } finally {
+      this.activeCount--;
+      if (this.queue.length > 0) {
+        const next = this.queue.shift();
+        if (next) next();
+      }
+    }
+  }
+}
+
+const ytDecipherQueue = new ConcurrencyQueue(10); // Limit to 10 parallel YouTube decipher operations
+const streamCache = new Map<string, { url: string, expiry: number }>();
+
+// API: Dual-Source Direct Stream URL Router
+async function getStreamUrlHelper(videoId: string): Promise<string> {
+  const isSaavn = videoId.startsWith("saavn:");
+  const isYouTube = videoId.startsWith("youtube:");
+  const actualId = videoId.replace("saavn:", "").replace("youtube:", "");
+
+  const finalIsSaavn = isSaavn || (!isYouTube && !isSaavn && actualId.length !== 11);
+
+  if (finalIsSaavn) {
+    const fetchMod = await import("node-fetch");
+    const fetch = fetchMod.default;
+    const response = await fetch(`https://jiosavnapi-production.up.railway.app/api/songs?ids=${actualId}`);
+    const data = await response.json() as any;
+    if (data.success && data.data && data.data.length > 0) {
+      const song = data.data[0];
+      if (song.downloadUrl && Array.isArray(song.downloadUrl)) {
+        const best = song.downloadUrl.sort((a: any, b: any) => (parseInt(b.quality) || 0) - (parseInt(a.quality) || 0));
+        return best[0].url;
+      }
+    }
+    throw new Error("Stream URL not found in JioSaavn");
+  } else {
+    // Wrap YouTube client calls in the concurrency queue
+    return ytDecipherQueue.run(async () => {
+      const yt = await getYT();
+
+      // Implement an 8-second timeout to prevent hanging requests from blocking the queue
+      const timeoutPromise = new Promise<never>((_, reject) =>
+        setTimeout(() => reject(new Error("YouTube API request timed out")), 8000)
+      );
+
+      const fetchInfoPromise = (async () => {
+        // Fallback Client Chain: TV -> TV_SIMPLY -> IOS
+        try {
+          return await yt.getBasicInfo(actualId, { client: 'TV' });
+        } catch (err: any) {
+          console.warn(`[decipher] TV client failed for ${actualId}, trying TV_SIMPLY...`, err.message);
+          try {
+            return await yt.getBasicInfo(actualId, { client: 'TV_SIMPLY' });
+          } catch (err2: any) {
+            console.warn(`[decipher] TV_SIMPLY client failed for ${actualId}, falling back to IOS...`, err2.message);
+            return await yt.getBasicInfo(actualId, { client: 'IOS' });
+          }
+        }
+      })();
+
+      const info = await Promise.race([fetchInfoPromise, timeoutPromise]);
+
+      if (!info.streaming_data) {
+        throw new Error(`No streaming_data for ${actualId}`);
+      }
+
+      const format = info.chooseFormat({ type: 'audio', quality: 'best' });
+      if (!format) {
+        throw new Error(`No audio format found for ${actualId}`);
+      }
+
+      const streamUrl = format.signature_cipher || format.cipher
+        ? await format.decipher(yt.session.player)
+        : format.url;
+
+      if (!streamUrl) {
+        throw new Error(`Decipher returned empty URL for ${actualId}`);
+      }
+
+      return streamUrl;
+    });
+  }
+}
+
+// Get from cache, or decipher and cache for 4 hours
+async function getOrDecipherStreamUrl(videoId: string): Promise<string> {
+  const now = Date.now();
+  const cached = streamCache.get(videoId);
+  if (cached && cached.expiry > now) {
+    return cached.url;
+  }
+  const streamUrl = await getStreamUrlHelper(videoId);
+  streamCache.set(videoId, { url: streamUrl, expiry: now + 4 * 60 * 60 * 1000 });
+  return streamUrl;
+}
+
+// Periodic garbage collection to prevent memory leaks from old cached links
+setInterval(() => {
+  const now = Date.now();
+  let deletedCount = 0;
+  for (const [key, val] of streamCache.entries()) {
+    if (val.expiry <= now) {
+      streamCache.delete(key);
+      deletedCount++;
+    }
+  }
+  if (deletedCount > 0) {
+    console.log(`[cache-gc] Cleaned up ${deletedCount} expired stream cache entries.`);
+  }
+}, 30 * 60 * 1000); // Run cleanup every 30 minutes
 
 import { initializeApp } from "firebase/app";
 import { getFirestore, doc, getDoc, setDoc, updateDoc, collection, getDocs, deleteDoc, query, where, onSnapshot } from "firebase/firestore";
@@ -251,7 +399,7 @@ app.post("/api/user/:uid/like", async (req, res) => {
   }
 });
 
-// API: YouTube Search (Proxy to musicapi.x007)
+// API: Dual-Source Search (JioSaavn + YouTube)
 app.get("/api/youtube/search", async (req, res) => {
   const { query } = req.query;
   if (!query) return res.status(400).json({ error: "Missing query parameter" });
@@ -259,62 +407,118 @@ app.get("/api/youtube/search", async (req, res) => {
   try {
     const fetchMod = await import("node-fetch");
     const fetch = fetchMod.default;
-    // Using seevn (Saavn) or wunk (Wynk) for good English/Hindi coverage
-    const r = await fetch(`https://musicapi.x007.workers.dev/search?q=${encodeURIComponent(query as string)}&searchEngine=seevn`);
-    const data = await r.json() as any;
+    const qStr = query as string;
     
-    if (data.status === 200 && data.response) {
-      const tracks = data.response.map((song: any) => ({
-        id: song.id,
-        title: song.title || "Unknown Title",
-        artist: "Various Artists", // The API doesn't return artist
-        album: "Search Result",
-        duration: "03:30",
-        coverUrl: song.img || "https://images.unsplash.com/photo-1614613535308-eb5fbd3d2c17",
-        genre: "STREAM",
-        audioUrl: song.id // We pass the internal ID to the stream endpoint
-      }));
-      res.json({ success: true, data: { results: tracks } });
-    } else {
-      res.json({ success: true, data: { results: [] } });
+    let tracks: any[] = [];
+    const preferSaavn = isIndianQuery(qStr);
+
+    // 1. Try JioSaavn if Indian music preferred
+    if (preferSaavn) {
+      try {
+        const r = await fetch(`https://jiosavnapi-production.up.railway.app/api/search/songs?query=${encodeURIComponent(qStr)}&limit=15`);
+        const data = await r.json() as any;
+        
+        if (data.success && data.data && data.data.results) {
+          tracks = data.data.results.map((song: any) => {
+            let artists = "Unknown Artist";
+            if (typeof song.primaryArtists === "string") artists = song.primaryArtists;
+            else if (song.artists && typeof song.artists === "string") artists = song.artists;
+            else if (song.artists?.primary && Array.isArray(song.artists.primary) && song.artists.primary.length > 0) {
+              artists = song.artists.primary.map((a: any) => a.name).join(", ");
+            } else if (song.artists?.all && Array.isArray(song.artists.all) && song.artists.all.length > 0) {
+              artists = song.artists.all.map((a: any) => a.name).join(", ");
+            }
+            
+            let cover = "https://images.unsplash.com/photo-1614613535308-eb5fbd3d2c17";
+            if (song.image && Array.isArray(song.image) && song.image.length > 0) {
+              cover = song.image[song.image.length - 1].url; // highest res
+            }
+
+            const dur = parseInt(song.duration, 10) || 0;
+            const mm = Math.floor(dur / 60).toString().padStart(2, "0");
+            const ss = (dur % 60).toString().padStart(2, "0");
+
+            return {
+              id: song.id,
+              title: song.name ? song.name.replace(/&quot;/g, '"').replace(/&#039;/g, "'") : "Unknown Title",
+              artist: artists,
+              album: song.album?.name ? song.album.name.replace(/&quot;/g, '"').replace(/&#039;/g, "'") : "Unknown Album",
+              duration: `${mm}:${ss}`,
+              coverUrl: cover,
+              genre: song.language ? song.language.toUpperCase() : "SAAVN",
+              audioUrl: song.id // No prefix needed, fallback logic handles routing
+            };
+          });
+        }
+      } catch (err) {
+        console.warn("Saavn search failed", err);
+      }
     }
+
+    // 2. Try YouTube Music if Saavn failed or was not preferred
+    if (tracks.length === 0) {
+      try {
+        const yt = await getYT();
+        const results = await yt.music.search(qStr, { type: 'song' });
+        
+        tracks = (results.songs?.contents ?? []).slice(0, 15).map((item: any) => {
+          const dur = item.duration?.seconds ?? 0;
+          const mm = Math.floor(dur / 60).toString().padStart(2, "0");
+          const ss = (dur % 60).toString().padStart(2, "0");
+          return {
+            id: item.id,
+            title: item.title || "Unknown Title",
+            artist: item.artists?.[0]?.name ?? 'Unknown',
+            album: item.album?.name ?? 'YouTube Music',
+            duration: `${mm}:${ss}`,
+            coverUrl: item.thumbnail?.[0]?.url ?? "https://images.unsplash.com/photo-1614613535308-eb5fbd3d2c17",
+            genre: "YT_MUSIC",
+            audioUrl: item.id // No prefix needed, fallback logic handles routing
+          };
+        });
+      } catch (err) {
+        console.error("YouTube search failed", err);
+      }
+    }
+
+    // Asynchronously pre-decipher the top 3 YouTube results in the background to warm the cache
+    const ytTracks = tracks.filter(t => t.genre === "YT_MUSIC").slice(0, 3);
+    for (const track of ytTracks) {
+      getOrDecipherStreamUrl(track.id).catch((err: any) => {
+        console.warn(`[search-predecipher] Failed to pre-decipher ${track.id}:`, err.message);
+      });
+    }
+
+    res.json({ success: true, data: { results: tracks } });
   } catch (err) {
     console.error("Search error:", err);
     res.status(500).json({ error: "Search error" });
   }
 });
 
-// Stream URL Cache (valid for 5 hours)
-const streamCache = new Map<string, { url: string, expiry: number }>();
-
-// API: YouTube Direct Stream URL (Proxy to musicapi.x007/fetch)
+// API: Dual-Source Direct Stream URL Router (For direct JSON url responses)
 app.get("/api/youtube/stream/:videoId", async (req, res) => {
   const { videoId } = req.params;
   if (!videoId) return res.status(400).json({ error: "Missing videoId" });
 
-  const now = Date.now();
-  const cached = streamCache.get(videoId);
-  if (cached && cached.expiry > now) {
-    return res.json({ success: true, url: cached.url });
-  }
-
   try {
-    const fetchMod = await import("node-fetch");
-    const fetch = fetchMod.default;
-    
-    const response = await fetch(`https://musicapi.x007.workers.dev/fetch?id=${videoId}`);
-    const data = await response.json() as any;
-    
-    if (data.status === 200 && data.response) {
-      const streamUrl = data.response;
-      streamCache.set(videoId, { url: streamUrl, expiry: now + 5 * 60 * 60 * 1000 });
-      return res.json({ success: true, url: streamUrl });
-    } else {
-      return res.status(404).json({ error: "Stream URL not found" });
-    }
-  } catch (err) {
-    console.error("Stream fetch error:", err);
-    res.status(500).json({ error: "Stream fetch error" });
+    const streamUrl = await getOrDecipherStreamUrl(videoId);
+    res.json({ success: true, url: streamUrl });
+  } catch (err: any) {
+    console.error("Stream fetch error:", err.message);
+    res.status(500).json({ error: "Stream fetch error: " + err.message });
+  }
+});
+
+// API: Redirect the browser directly to YouTube's CDN (shifts 100% of bandwidth and streaming IPs to user)
+app.get('/api/proxy/stream/:videoId', async (req, res) => {
+  const { videoId } = req.params;
+  try {
+    const streamUrl = await getOrDecipherStreamUrl(videoId);
+    res.redirect(302, streamUrl);
+  } catch (err: any) {
+    console.error(`[proxy] FAILED to get stream URL for ${videoId}:`, err.message);
+    if (!res.headersSent) res.status(500).json({ error: err.message });
   }
 });
 

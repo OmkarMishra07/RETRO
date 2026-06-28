@@ -8,7 +8,7 @@ const __dirname = path.dirname(__filename);
 console.log("Starting Music2D Combined Dev Environment...");
 
 // Start Express Backend
-const backend = spawn("npx", ["tsx", "server.ts"], {
+const backend = spawn("npx", ["tsx", "watch", "server.ts"], {
   stdio: "inherit",
   shell: true,
   cwd: __dirname

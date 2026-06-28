@@ -119,22 +119,30 @@ export async function playAudioStream(url: string, onEnded?: () => void): Promis
 
     stopSynthTone();
     
+    // 1. REUSE OR CREATE HTMLAUDIO SYNCHRONOUSLY
+    if (!htmlAudio) {
+      htmlAudio = new Audio();
+      htmlAudio.volume = currentAudioVolume;
+    } else {
+      // Pause existing before doing the dummy play
+      htmlAudio.pause();
+    }
+    
+    // 2. SYNCHRONOUS GESTURE PLAY
+    // This MUST happen synchronously before any 'await' to satisfy Safari/Chrome Autoplay policies
+    if (!isResuming) {
+      htmlAudio.src = ""; // Clear so it doesn't play the old track
+      htmlAudio.load();
+    }
+    htmlAudio.play().catch(() => {}); // Catch and ignore the NotSupportedError (expected with empty src)
+    
     let playUrl = url;
-    // If it's a YouTube video ID (no http), fetch the direct InnerTube CDN URL
-    if (!url.startsWith("http://") && !url.startsWith("https://")) {
-      try {
-        const API_BASE = import.meta.env ? (import.meta.env.PROD ? "https://retro-959938719772.asia-south1.run.app" : "") : "";
-        const res = await fetch(`${API_BASE}/api/youtube/stream/${url}`);
-        const data = await res.json();
-        if (data.success && data.url) {
-          playUrl = data.url;
-        } else {
-          throw new Error("Stream URL not found");
-        }
-      } catch (err) {
-        console.error("Failed to fetch YouTube stream URL:", err);
-        return Promise.reject(err);
-      }
+    const rawId = url.replace(/^youtube:|^saavn:/i, '');
+    
+    // If it's a YouTube video ID (no http), use the proxy endpoint directly
+    if (!rawId.startsWith("http://") && !rawId.startsWith("https://")) {
+      const API_BASE = import.meta.env ? (import.meta.env.PROD ? "https://retro-959938719772.asia-south1.run.app" : "") : "";
+      playUrl = `${API_BASE}/api/proxy/stream/${rawId}`;
     }
     
     // Check if we are just resuming the same track
@@ -142,17 +150,11 @@ export async function playAudioStream(url: string, onEnded?: () => void): Promis
       return htmlAudio.play();
     }
     
-    // Re-use the existing pre-warmed htmlAudio to preserve the mobile user gesture!
-    if (!htmlAudio) {
-      htmlAudio = new Audio();
-      htmlAudio.volume = currentAudioVolume;
-    } else {
-      htmlAudio.pause();
-    }
-    
-    // Only use CORS on desktop. Mobile CDNs often fail CORS, causing the audio to break entirely.
+    // Only use CORS on desktop for non-YouTube tracks. Mobile CDNs and direct YouTube streams fail CORS.
     const isMobile = /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent);
-    if (!isMobile) {
+    const isYouTube = url.startsWith("youtube:") || (!url.startsWith("http://") && !url.startsWith("https://"));
+
+    if (!isMobile && !isYouTube) {
       htmlAudio.crossOrigin = "anonymous";
     } else {
       htmlAudio.removeAttribute("crossOrigin");
@@ -161,8 +163,8 @@ export async function playAudioStream(url: string, onEnded?: () => void): Promis
     htmlAudio.src = playUrl;
     htmlAudio.loop = isAudioLoopEnabled;
     
-    // Only connect if we are using crossOrigin, otherwise it will taint the context and throw errors on Safari
-    if (!isMobile) {
+    // Only connect analyser if we are using crossOrigin to prevent security/tainting blocks
+    if (!isMobile && !isYouTube) {
       connectAudioSource(htmlAudio);
     }
     

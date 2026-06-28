@@ -28,8 +28,23 @@ self.addEventListener('activate', (event) => {
 self.addEventListener('fetch', (event) => {
   const url = new URL(event.request.url);
 
-  // BYPASS: API posts, WebSockets, etc.
-  if (event.request.method !== 'GET' || url.pathname.startsWith('/jam-sync') || event.request.headers.get('Upgrade') === 'websocket') {
+  // BYPASS: API posts, WebSockets, stream proxy, search, etc.
+  if (
+    event.request.method !== 'GET' || 
+    url.pathname.startsWith('/jam-sync') || 
+    url.pathname.startsWith('/api/') || 
+    event.request.headers.get('Upgrade') === 'websocket'
+  ) {
+    return;
+  }
+
+  // BYPASS: Don't intercept YouTube CDN or external requests
+  if (
+    url.hostname.includes('googlevideo.com') ||
+    url.hostname.includes('youtube.com') ||
+    url.hostname.includes('googleapis.com') ||
+    !url.hostname.includes('localhost')
+  ) {
     return;
   }
 

@@ -2,8 +2,6 @@ import React, { useState, useEffect, useRef } from "react";
 import { Track } from "../types";
 import { Play, Pause, SkipBack, SkipForward, Shuffle, Repeat, Heart, Music, Sparkles, ListPlus, Tv, Disc3 } from "lucide-react";
 import { seekAudio, getAudioCurrentTime } from "../utils/audio";
-import YouTube from "react-youtube";
-
 interface TurntableProps {
   currentTrack: Track;
   isPlaying: boolean;
@@ -42,17 +40,10 @@ export const Turntable: React.FC<TurntableProps> = ({
   const durationParts = (currentTrack?.duration || "00:00").split(":");
   const totalSecs = (parseInt(durationParts[0], 10) || 0) * 60 + (parseInt(durationParts[1], 10) || 0);
 
-  const ytPlayerRef = useRef<any>(null);
-  const [showVideo, setShowVideo] = useState(false);
-
   // Sync progress tracker with active playback (both live streams and synth frequency beeps)
   useEffect(() => {
     const updateProgress = () => {
-      if (showVideo && ytPlayerRef.current && ytPlayerRef.current.getCurrentTime) {
-        setProgressSecs(Math.floor(ytPlayerRef.current.getCurrentTime()));
-      } else {
-        setProgressSecs(Math.floor(getAudioCurrentTime()));
-      }
+      setProgressSecs(Math.floor(getAudioCurrentTime()));
     };
     updateProgress();
     // Poll every 100ms for high responsiveness (seeking when paused aligns instantly)
@@ -60,7 +51,7 @@ export const Turntable: React.FC<TurntableProps> = ({
     return () => {
       clearInterval(timer);
     };
-  }, [currentTrack, showVideo]);
+  }, [currentTrack]);
 
   // Reset progress when track changes
   useEffect(() => {
@@ -68,36 +59,8 @@ export const Turntable: React.FC<TurntableProps> = ({
   }, [currentTrack]);
 
   useEffect(() => {
-    if (activeRoomId) {
-      ytPlayerRef.current = null;
-    }
+    // No-op for removed ytPlayer
   }, [activeRoomId]);
-
-  useEffect(() => {
-    try {
-      if (ytPlayerRef.current && ytPlayerRef.current.playVideo) {
-        if (isPlaying) {
-          ytPlayerRef.current.unMute();
-          ytPlayerRef.current.setVolume(100);
-          ytPlayerRef.current.playVideo();
-          
-          // Anti-scroll hack for iframe focus hijacking
-          setTimeout(() => {
-            document.documentElement.scrollTop = 0;
-            document.body.scrollTop = 0;
-            const mainWrapper = document.querySelector('main');
-            if (mainWrapper) mainWrapper.scrollTop = 0;
-            const appRoot = document.getElementById('root');
-            if (appRoot) appRoot.scrollTop = 0;
-          }, 10);
-        } else {
-          ytPlayerRef.current.pauseVideo();
-        }
-      }
-    } catch (e) {
-      console.warn("YT Turntable Error:", e);
-    }
-  }, [isPlaying]);
 
   // Format seconds -> MM:SS
   const formatTime = (secs: number) => {
@@ -115,9 +78,6 @@ export const Turntable: React.FC<TurntableProps> = ({
     const boundedSecs = Math.max(0, Math.min(targetSecs, totalSecs));
     setProgressSecs(boundedSecs);
     seekAudio(boundedSecs); // Seek actual audio stream so all components stay synced
-    if (ytPlayerRef.current && ytPlayerRef.current.seekTo) {
-      ytPlayerRef.current.seekTo(boundedSecs, true);
-    }
   };
 
   // Arm rotation angle: when playing, pivot arm onto the vinyl disk's edge (24 degrees), otherwise parked at 0 degrees
@@ -135,16 +95,6 @@ export const Turntable: React.FC<TurntableProps> = ({
           </span>
         </div>
         <div className="flex items-center gap-1.5">
-          <button 
-            onClick={() => setShowVideo(!showVideo)}
-            className="flex items-center gap-1.5 bg-primary/10 border border-primary/20 px-2 py-0.5 rounded hover:bg-primary/20 transition-all cursor-pointer"
-          >
-            {showVideo ? (
-              <><Disc3 className="w-3 h-3 text-primary" /><span className="text-[8px] text-primary font-bold">SHOW DISK</span></>
-            ) : (
-              <><Tv className="w-3 h-3 text-primary" /><span className="text-[8px] text-primary font-bold">SHOW VIDEO</span></>
-            )}
-          </button>
           <div className="flex items-center gap-1.5 bg-primary/10 border border-primary/20 px-2 py-0.5 rounded">
             <Sparkles className="w-3 h-3 text-primary animate-pulse" />
             <span className="text-[8px] text-primary font-bold">LOSSLESS AUDIO</span>
@@ -169,52 +119,11 @@ export const Turntable: React.FC<TurntableProps> = ({
         {/* Rotating Platter Cover / Label */}
         <div 
           className={`w-[264px] h-[264px] rounded-full flex items-center justify-center transition-transform duration-1000 overflow-hidden relative ${
-            isPlaying && !showVideo ? "spinning-vinyl" : ""
+            isPlaying ? "spinning-vinyl" : ""
           }`}
         >
-          {/* Audio background player for YouTube */}
-          {currentTrack?.audioUrl && !activeRoomId && (
-            <div className={`absolute inset-0 w-full h-full ${showVideo ? 'opacity-100' : 'opacity-[0.001] pointer-events-none'}`}>
-              <YouTube
-                videoId={currentTrack.audioUrl}
-                opts={{
-                  width: '100%',
-                  height: '100%',
-                  playerVars: {
-                    autoplay: isPlaying ? 1 : 0,
-                    controls: 1,
-                    disablekb: 1,
-                    fs: 0,
-                    rel: 0
-                  },
-                }}
-                onReady={(e) => {
-                  ytPlayerRef.current = e.target;
-                  e.target.unMute();
-                  e.target.setVolume(100);
-                  
-                  const currentTime = getAudioCurrentTime();
-                  if (currentTime > 0) {
-                    e.target.seekTo(currentTime, true);
-                  }
-                  
-                  if (isPlaying) e.target.playVideo();
-                }}
-                onStateChange={(e) => {
-                  if (e.target.isMuted()) {
-                    e.target.unMute();
-                  }
-                  if (e.data === 1 && !isPlaying) togglePlay(); // Ensure external state stays synced
-                  if (e.data === 2 && isPlaying) togglePlay();
-                  if (e.data === 0) onNext();
-                }}
-                className="w-full h-full scale-[2.2] pointer-events-auto"
-              />
-            </div>
-          )}
-
           {/* Album Cover Label */}
-          <div className={`w-28 h-28 rounded-full bg-gray-950 border-[5px] border-gray-950 flex items-center justify-center overflow-hidden relative shadow-inner transition-opacity duration-300 ${showVideo ? 'opacity-0 pointer-events-none' : 'opacity-100'}`}>
+          <div className={`w-28 h-28 rounded-full bg-gray-950 border-[5px] border-gray-950 flex items-center justify-center overflow-hidden relative shadow-inner transition-opacity duration-300 opacity-100`}>
             <img 
               src={currentTrack.coverUrl} 
               alt="Vinyl Label"

@@ -275,13 +275,17 @@
     text-shadow: 0 0 2px #fff, 0 0 5px #ff0000, 0 0 10px #ff0000, 0 0 20px #ff0000;
     color: #ffe6e6;
   }
-  48%, 52%, 78%, 82% {
-    text-shadow: 0 0 4px #fff, 0 0 10px #ff0000, 0 0 20px #ff0000, 0 0 40px #ff0000, 0 0 60px #ff0000;
-    color: #ffffff;
-  }
-  50% {
+  20%, 24%, 55% {
     text-shadow: none;
-    color: #330000; /* Dark dim red when off */
+    color: #330000; /* Deep red when 'off' */
+  }
+  21%, 23%, 54%, 56% {
+    text-shadow: 0 0 4px #fff, 0 0 10px #ff0000, 0 0 20px #ff0000;
+    color: #ffcccc;
+  }
+  78%, 82% {
+    text-shadow: 0 0 4px #fff, 0 0 10px #ff0000, 0 0 20px #ff0000, 0 0 40px #ff0000, 0 0 60px #ff0000;
+    color: #ffffff; /* Bright flash */
   }
   80% {
     text-shadow: none;

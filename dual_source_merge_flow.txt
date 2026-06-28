@@ -1,0 +1,210 @@
+
+Step 1 — Install dependencies
+bashnpm install youtubei.js axios
+For JioSaavn you self-host it — clone and deploy sumitkolhe/jiosaavn-api to Vercel, then use your own URL.
+
+Step 2 — The music router (musicRouter.ts)
+This is the core merge logic. One function, two sources, one unified response shape.
+tsimport { Innertube } from 'youtubei.js';
+import axios from 'axios';
+
+const SAAVN_BASE = process.env.SAAVN_API_URL || 'https://your-saavn.vercel.app';
+
+let ytClient: Innertube | null = null;
+
+async function getYT() {
+  if (!ytClient) ytClient = await Innertube.create();
+  return ytClient;
+}
+
+// Unified song shape — both sources map to this
+export interface Song {
+  id: string;
+  title: string;
+  artist: string;
+  album: string;
+  duration: number;       // seconds
+  thumbnail: string;
+  source: 'youtube' | 'saavn';
+  streamUrl?: string;
+}
+
+// Detect if query is likely Indian music
+function isIndianQuery(query: string): boolean {
+  const indianLangs = /[\u0900-\u097F]/; // Hindi unicode block
+  const indianKeywords = /bollywood|hindi|punjabi|tamil|telugu|saavn|jiosaavn/i;
+  return indianLangs.test(query) || indianKeywords.test(query);
+}
+
+// Search — tries both sources and merges results
+export async function search(query: string, limit = 20): Promise<Song[]> {
+  const preferSaavn = isIndianQuery(query);
+
+  if (preferSaavn) {
+    try {
+      const saavnResults = await searchSaavn(query, limit);
+      if (saavnResults.length > 0) return saavnResults;
+    } catch (e) {
+      console.warn('Saavn search failed, falling back to YouTube', e);
+    }
+  }
+
+  // Always try YouTube (broader catalogue)
+  try {
+    const ytResults = await searchYouTube(query, limit);
+    return ytResults;
+  } catch (e) {
+    console.error('YouTube search also failed', e);
+    return [];
+  }
+}
+
+// Get stream URL — routes by source tag on the song
+export async function getStreamUrl(id: string, source: 'youtube' | 'saavn'): Promise<string> {
+  if (source === 'saavn') {
+    return getSaavnStreamUrl(id);
+  }
+  return getYouTubeStreamUrl(id);
+}
+
+// --- YouTube Music implementation ---
+
+async function searchYouTube(query: string, limit: number): Promise<Song[]> {
+  const yt = await getYT();
+  const results = await yt.music.search(query, { type: 'song' });
+
+  return (results.songs?.contents ?? []).slice(0, limit).map((item: any) => ({
+    id: item.id,
+    title: item.title,
+    artist: item.artists?.[0]?.name ?? 'Unknown',
+    album: item.album?.name ?? '',
+    duration: item.duration?.seconds ?? 0,
+    thumbnail: item.thumbnail?.[0]?.url ?? '',
+    source: 'youtube' as const,
+  }));
+}
+
+async function getYouTubeStreamUrl(videoId: string): Promise<string> {
+  const yt = await getYT();
+  const info = await yt.getBasicInfo(videoId, { client: 'ANDROID_MUSIC' });
+
+  const formats = info.streaming_data?.adaptive_formats ?? [];
+  const audioOnly = formats
+    .filter((f: any) => f.has_audio && !f.has_video)
+    .sort((a: any, b: any) => (b.bitrate ?? 0) - (a.bitrate ?? 0));
+
+  if (!audioOnly.length) throw new Error(`No audio stream found for ${videoId}`);
+  return audioOnly[0].decipher(yt.session.player);
+}
+
+// --- JioSaavn implementation ---
+
+async function searchSaavn(query: string, limit: number): Promise<Song[]> {
+  const { data } = await axios.get(`${SAAVN_BASE}/api/search/songs`, {
+    params: { query, page: 1, limit },
+  });
+
+  return (data.data?.results ?? []).map((item: any) => ({
+    id: item.id,
+    title: item.name,
+    artist: item.artists?.primary?.[0]?.name ?? 'Unknown',
+    album: item.album?.name ?? '',
+    duration: item.duration ?? 0,
+    thumbnail: item.image?.[2]?.link ?? item.image?.[0]?.link ?? '',
+    source: 'saavn' as const,
+  }));
+}
+
+async function getSaavnStreamUrl(songId: string): Promise<string> {
+  const { data } = await axios.get(`${SAAVN_BASE}/api/songs/${songId}`);
+  const urls: any[] = data.data?.[0]?.downloadUrl ?? [];
+  // Pick highest quality — Saavn returns 12kbps, 48kbps, 96kbps, 160kbps, 320kbps
+  const best = urls.sort((a, b) => parseInt(b.quality) - parseInt(a.quality))[0];
+  if (!best?.link) throw new Error(`No stream URL for Saavn song ${songId}`);
+  return best.link;
+}
+
+Step 3 — Express routes (routes/music.ts)
+tsimport { Router } from 'express';
+import { search, getStreamUrl } from '../musicRouter';
+import NodeCache from 'node-cache';
+
+const router = Router();
+const cache = new NodeCache({ stdTTL: 300 }); // 5 min for search
+const streamCache = new NodeCache({ stdTTL: 21600 }); // 6hr for stream URLs
+
+router.get('/search', async (req, res) => {
+  const { q, limit = '20' } = req.query as any;
+  if (!q) return res.status(400).json({ error: 'q is required' });
+
+  const cacheKey = `search:${q}:${limit}`;
+  const cached = cache.get(cacheKey);
+  if (cached) return res.json(cached);
+
+  try {
+    const results = await search(q, parseInt(limit));
+    cache.set(cacheKey, results);
+    res.json(results);
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+router.get('/stream/:source/:id', async (req, res) => {
+  const { source, id } = req.params;
+  if (source !== 'youtube' && source !== 'saavn') {
+    return res.status(400).json({ error: 'source must be youtube or saavn' });
+  }
+
+  const cacheKey = `stream:${source}:${id}`;
+  const cached = streamCache.get<string>(cacheKey);
+  if (cached) return res.json({ streamUrl: cached });
+
+  try {
+    const streamUrl = await getStreamUrl(id, source);
+    streamCache.set(cacheKey, streamUrl);
+    res.json({ streamUrl });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+export default router;
+
+Step 4 — Frontend (useMusicPlayer.ts)
+tsimport { useState } from 'react';
+
+const API = 'http://localhost:3000/api';
+
+export function useMusicPlayer() {
+  const [current, setCurrent] = useState<any>(null);
+  const [loading, setLoading] = useState(false);
+
+  async function searchSongs(query: string) {
+    const res = await fetch(`${API}/search?q=${encodeURIComponent(query)}`);
+    return res.json(); // returns Song[] — same shape regardless of source
+  }
+
+  async function play(song: any) {
+    setLoading(true);
+    try {
+      // Route to correct backend source using the song's source tag
+      const res = await fetch(`${API}/stream/${song.source}/${song.id}`);
+      const { streamUrl } = await res.json();
+
+      const audio = new Audio(streamUrl);
+      audio.play();
+      setCurrent({ ...song, audio });
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  return { searchSongs, play, current, loading };
+}
+
+Step 5 — Environment variables (.env)
+envSAAVN_API_URL=https://your-own-jiosaavn.vercel.app
+
+The key points
+The source field on every song is the glue. When you get results back from /search, each song already knows if it came from youtube or saavn. When the user clicks play, you pass that source tag to /stream/:source/:id and the backend routes it to the right stream resolver. Your frontend never needs to know which source is which — it just calls play(song).

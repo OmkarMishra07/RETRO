@@ -13,7 +13,6 @@ import {
   verifyRoomCredentials,
   createJamRoom
 } from "../../firebase";
-import YouTube from "react-youtube";
 
 interface JamTogetherScreenProps {
   onPlayTrack: (track: Track) => void;
@@ -504,44 +503,11 @@ export const JamTogetherScreen: React.FC<JamTogetherScreenProps> = ({
               <div className="flex-1 bg-black rounded-lg border-2 border-gray-700 relative overflow-hidden flex items-center justify-center aspect-[16/10] pointer-events-auto">
                 <div className="absolute inset-0 pointer-events-none rounded-lg shadow-[inset_0_0_100px_rgba(0,0,0,0.9)] z-20"></div>
                 
-                {currentTrack?.audioUrl && (
-                  <YouTube
-                    videoId={currentTrack.audioUrl}
-                    opts={{
-                      width: '100%',
-                      height: '100%',
-                      playerVars: {
-                        autoplay: isPlaying ? 1 : 0,
-                        controls: 1,
-                        disablekb: 1,
-                        fs: 0,
-                        rel: 0
-                      },
-                    }}
-                    onReady={(e) => {
-                      ytPlayerRef.current = e.target;
-                      e.target.unMute();
-                      e.target.setVolume(100);
-                      
-                      const currentTime = getAudioCurrentTime();
-                      if (currentTime > 0) {
-                        e.target.seekTo(currentTime, true);
-                      }
-                      
-                      if (isPlaying) e.target.playVideo();
-                    }}
-                    onStateChange={(e) => {
-                      if (e.target.isMuted()) {
-                        e.target.unMute();
-                      }
-                      if (e.data === 1 && !isPlaying) setIsPlaying(true);
-                      if (e.data === 2 && isPlaying) setIsPlaying(false);
-                      if (e.data === 0) {
-                        if (onTrackEnded) onTrackEnded();
-                        else setIsPlaying(false);
-                      }
-                    }}
-                    className="absolute inset-0 w-full h-full scale-105"
+                {currentTrack?.coverUrl && (
+                  <img 
+                    src={currentTrack.coverUrl} 
+                    alt="Current Track"
+                    className="absolute inset-0 w-full h-full object-cover opacity-80 mix-blend-screen pointer-events-none"
                   />
                 )}
                 {!currentTrack?.audioUrl && (

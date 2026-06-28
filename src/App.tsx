@@ -49,7 +49,8 @@ export default function App() {
     const saved = localStorage.getItem("retro_last_track");
     if (saved) {
       try {
-        return JSON.parse(saved);
+        const parsed = JSON.parse(saved);
+        return parsed;
       } catch (e) {
         console.warn("Failed to parse last saved track", e);
       }
