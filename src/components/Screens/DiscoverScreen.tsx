@@ -58,7 +58,7 @@ export const DiscoverScreen: React.FC<DiscoverScreenProps> = ({
 
     const delayDebounce = setTimeout(async () => {
       try {
-        const response = await fetch(`http://localhost:3001/api/youtube/search?query=${encodeURIComponent(searchVal.trim())}`);
+        const response = await fetch(`/api/youtube/search?query=${encodeURIComponent(searchVal.trim())}`);
         const resData = await response.json();
         if (resData.success && resData.data && resData.data.results) {
           const mapped = resData.data.results;

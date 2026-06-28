@@ -91,7 +91,7 @@ export const NowSpinningScreen: React.FC<NowSpinningScreenProps> = ({
 
     const delayDebounceFn = setTimeout(async () => {
       try {
-        const response = await fetch(`http://localhost:3001/api/youtube/search?query=${encodeURIComponent(spinningSearchQuery.trim())}`);
+        const response = await fetch(`/api/youtube/search?query=${encodeURIComponent(spinningSearchQuery.trim())}`);
         const resData = await response.json();
         if (resData.success && resData.data && resData.data.results) {
           const mapped = resData.data.results;
@@ -116,7 +116,7 @@ export const NowSpinningScreen: React.FC<NowSpinningScreenProps> = ({
     setActiveTab("search");
     setIsSearching(true);
     try {
-      const response = await fetch(`http://localhost:3001/api/youtube/search?query=${encodeURIComponent(spinningSearchQuery.trim())}`);
+      const response = await fetch(`/api/youtube/search?query=${encodeURIComponent(spinningSearchQuery.trim())}`);
       const resData = await response.json();
       if (resData.success && resData.data && resData.data.results) {
         const mapped = resData.data.results;
