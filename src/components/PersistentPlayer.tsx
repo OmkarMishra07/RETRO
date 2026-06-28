@@ -320,6 +320,21 @@ export const PersistentPlayer: React.FC<PersistentPlayerProps> = ({
     const targetSeconds = Math.floor(clickPercent * totalSecs);
     setProgressSecs(targetSeconds);
     seekAudio(targetSeconds);
+    window.dispatchEvent(new CustomEvent("yt-seek", { detail: targetSeconds }));
+  };
+
+  // Add mobile seek support for the top absolute progress bar
+  const handleMobileTimelineClick = (e: React.MouseEvent<HTMLDivElement>) => {
+    if (totalSecs === 0) return;
+    e.stopPropagation();
+    const rect = e.currentTarget.getBoundingClientRect();
+    const clickX = e.clientX - rect.left;
+    const width = rect.width;
+    const clickPercent = clickX / width;
+    const targetSeconds = Math.floor(clickPercent * totalSecs);
+    setProgressSecs(targetSeconds);
+    seekAudio(targetSeconds);
+    window.dispatchEvent(new CustomEvent("yt-seek", { detail: targetSeconds }));
   };
 
 
@@ -367,7 +382,10 @@ export const PersistentPlayer: React.FC<PersistentPlayerProps> = ({
       className="w-full bg-black text-[#fff9ef] border-t-2 border-border-tan h-20 px-4 md:px-6 flex items-center justify-between font-mono relative select-none z-40 overflow-hidden cursor-pointer"
     >
       {/* Top absolute progress bar for mobile */}
-      <div className="absolute top-0 left-0 right-0 h-1 bg-gray-800 md:hidden z-20">
+      <div 
+        onClick={handleMobileTimelineClick}
+        className="absolute top-0 left-0 right-0 h-1.5 bg-gray-800 md:hidden z-20 cursor-pointer"
+      >
         <div 
           className="h-full bg-primary transition-all duration-100 ease-out"
           style={{ width: `${(progressSecs / totalSecs) * 100}%` }}

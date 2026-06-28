@@ -2,19 +2,19 @@ import React, { useState, useEffect, lazy, Suspense } from "react";
 import { Screen, Track, UserProfile } from "./types";
 import { MOCK_TRACKS, MOCK_PROFILE } from "./data";
 import { playSynthTone, stopSynthTone, updateSynthFrequency, getAudioCurrentTime, seekAudio, setAudioLoop, initAudio } from "./utils/audio";
-import { toggleLikeTrack, addRecentlyPlayed, joinJamRoom, leaveJamRoom, updateJamRoomTrack, addPlaylist, addTrackToPlaylist, checkRedirectResult, logAnalyticsEvent, auth, onAuthStateChanged, syncUserProfile, signOut } from "./firebase";
+import { toggleLikeTrack, addRecentlyPlayed, joinJamRoom, leaveJamRoom, updateJamRoomTrack, addPlaylist, addTrackToPlaylist, checkRedirectResult, logAnalyticsEvent, auth, onAuthStateChanged, syncUserProfile, signOut, sendJamRoomMessage } from "./firebase";
 
 import { Sidebar } from "./components/Sidebar";
 import { PersistentPlayer } from "./components/PersistentPlayer";
 
 // Lazy-loaded Screen Components for Code Splitting (Optimizes initial bundle size, FCP, and LCP)
 const LandingPageScreen = lazy(() => import("./components/Screens/LandingPageScreen").then(m => ({ default: m.LandingPageScreen })));
-const NowSpinningScreen = lazy(() => import("./components/Screens/NowSpinningScreen").then(m => ({ default: m.NowSpinningScreen })));
+import { NowSpinningScreen } from "./components/Screens/NowSpinningScreen";
 const DiscoverScreen = lazy(() => import("./components/Screens/DiscoverScreen").then(m => ({ default: m.DiscoverScreen })));
 const SearchScreen = lazy(() => import("./components/Screens/SearchScreen").then(m => ({ default: m.SearchScreen })));
 const LikedMusicScreen = lazy(() => import("./components/Screens/LikedMusicScreen").then(m => ({ default: m.LikedMusicScreen })));
 const PlaylistScreen = lazy(() => import("./components/Screens/PlaylistScreen").then(m => ({ default: m.PlaylistScreen })));
-const JamTogetherScreen = lazy(() => import("./components/Screens/JamTogetherScreen").then(m => ({ default: m.JamTogetherScreen })));
+import { JamTogetherScreen } from "./components/Screens/JamTogetherScreen";
 const ProfileScreen = lazy(() => import("./components/Screens/ProfileScreen").then(m => ({ default: m.ProfileScreen })));
 const LoginScreen = lazy(() => import("./components/Screens/LoginScreen").then(m => ({ default: m.LoginScreen })));
 const RegisterScreen = lazy(() => import("./components/Screens/RegisterScreen").then(m => ({ default: m.RegisterScreen })));
@@ -227,29 +227,10 @@ export default function App() {
   useEffect(() => {
     const fetchTrending = async () => {
       try {
-        const response = await fetch("https://jiosavnapi-production.up.railway.app/api/search/songs?query=trending&limit=15");
+        const response = await fetch("http://localhost:3001/api/youtube/search?query=trending+music");
         const resData = await response.json();
         if (resData.success && resData.data && resData.data.results) {
-          const mapped = resData.data.results.map((song: any) => {
-            const downloadObj = song.downloadUrl.find((d: any) => d.quality === "320kbps") || song.downloadUrl[song.downloadUrl.length - 1];
-            const imageObj = song.image.find((i: any) => i.quality === "500x500") || song.image[song.image.length - 1];
-            const durationSec = song.duration || 0;
-            const mins = Math.floor(durationSec / 60);
-            const secs = durationSec % 60;
-            const durationStr = `${mins.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`;
-            
-            return {
-              id: song.id,
-              title: song.name,
-              artist: song.artists.primary.map((a: any) => a.name).join(", ") || "Unknown Artist",
-              album: song.album.name || "Unknown Album",
-              duration: durationStr,
-              coverUrl: imageObj ? imageObj.url : "https://images.unsplash.com/photo-1614613535308-eb5fbd3d2c17",
-              genre: song.language ? song.language.toUpperCase() : "UNKNOWN",
-              listeners: song.playCount ? `${(song.playCount / 1000000).toFixed(1)}M` : "100K",
-              audioUrl: downloadObj ? downloadObj.url : ""
-            };
-          });
+          const mapped = resData.data.results;
           setTrendingTracks(mapped);
           const savedLastTrackStr = localStorage.getItem("retro_last_track");
           if (!savedLastTrackStr && mapped.length > 0) {
@@ -262,19 +243,10 @@ export default function App() {
     };
     const fetchTrendingAlbums = async () => {
       try {
-        const response = await fetch("https://jiosavnapi-production.up.railway.app/api/search/albums?query=latest&limit=8");
+        const response = await fetch("http://localhost:3001/api/youtube/search?query=latest+music+albums");
         const resData = await response.json();
         if (resData.success && resData.data && resData.data.results) {
-          const mapped = resData.data.results.map((album: any) => {
-            const imageObj = album.image.find((i: any) => i.quality === "500x500") || album.image[album.image.length - 1];
-            return {
-              id: album.id,
-              title: album.name,
-              artist: album.artists?.primary?.map((a: any) => a.name).join(", ") || album.artist || "Various Artists",
-              coverUrl: imageObj ? imageObj.url : "https://images.unsplash.com/photo-1614613535308-eb5fbd3d2c17",
-              year: album.year
-            };
-          });
+          const mapped = resData.data.results;
           setTrendingAlbums(mapped);
         }
       } catch (e) {
@@ -608,6 +580,9 @@ export default function App() {
     
     if (activeRoomId && !skipFirebaseSync) {
       updateJamRoomTrack(activeRoomId, track, true, 0);
+      if (user) {
+        sendJamRoomMessage(activeRoomId, user, `started playing ${track.title}`);
+      }
     }
     
     // Save to recently played database
@@ -705,29 +680,10 @@ export default function App() {
       const primaryArtist = targetArtists[0] || track.artist;
       if (primaryArtist) {
         try {
-          const response = await fetch(`https://jiosavnapi-production.up.railway.app/api/search/songs?query=${encodeURIComponent(primaryArtist)}&limit=15`);
+          const response = await fetch(`http://localhost:3001/api/youtube/search?query=${encodeURIComponent(primaryArtist)}`);
           const resData = await response.json();
           if (resData.success && resData.data && resData.data.results) {
-            const mapped = resData.data.results.map((song: any) => {
-              const downloadObj = song.downloadUrl.find((d: any) => d.quality === "320kbps") || song.downloadUrl[song.downloadUrl.length - 1];
-              const imageObj = song.image.find((i: any) => i.quality === "500x500") || song.image[song.image.length - 1];
-              const durationSec = song.duration || 0;
-              const mins = Math.floor(durationSec / 60);
-              const secs = durationSec % 60;
-              const durationStr = `${mins.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`;
-              
-              return {
-                id: song.id,
-                title: song.name,
-                artist: song.artists.primary.map((a: any) => a.name).join(", ") || "Unknown Artist",
-                album: song.album.name || "Unknown Album",
-                duration: durationStr,
-                coverUrl: imageObj ? imageObj.url : "https://images.unsplash.com/photo-1614613535308-eb5fbd3d2c17",
-                genre: song.language ? song.language.toUpperCase() : "UNKNOWN",
-                listeners: song.playCount ? `${(song.playCount / 1000000).toFixed(1)}M` : "100K",
-                audioUrl: downloadObj ? downloadObj.url : ""
-              };
-            }).filter((t: Track) => t.id !== track.id && t.audioUrl && !playedHistory.includes(t.id));
+            const mapped = resData.data.results.filter((t: Track) => t.id !== track.id && t.audioUrl && !playedHistory.includes(t.id));
             
             // Append and de-duplicate API results
             for (const t of mapped) {
@@ -877,47 +833,17 @@ export default function App() {
     setAlbumResults([]);
     try {
       // 1. Songs Search
-      const response = await fetch(`https://jiosavnapi-production.up.railway.app/api/search/songs?query=${encodeURIComponent(query)}`);
+      const response = await fetch(`http://localhost:3001/api/youtube/search?query=${encodeURIComponent(query)}`);
       const resData = await response.json();
       if (resData.success && resData.data && resData.data.results) {
-        const mapped = resData.data.results.map((song: any) => {
-          const downloadObj = song.downloadUrl.find((d: any) => d.quality === "320kbps") || song.downloadUrl[song.downloadUrl.length - 1];
-          const imageObj = song.image.find((i: any) => i.quality === "500x500") || song.image[song.image.length - 1];
-          const durationSec = song.duration || 0;
-          const mins = Math.floor(durationSec / 60);
-          const secs = durationSec % 60;
-          const durationStr = `${mins.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`;
-          
-          return {
-            id: song.id,
-            title: song.name,
-            artist: song.artists.primary.map((a: any) => a.name).join(", ") || "Unknown Artist",
-            album: song.album.name || "Unknown Album",
-            duration: durationStr,
-            coverUrl: imageObj ? imageObj.url : "https://images.unsplash.com/photo-1614613535308-eb5fbd3d2c17",
-            genre: song.language ? song.language.toUpperCase() : "UNKNOWN",
-            listeners: song.playCount ? `${(song.playCount / 1000000).toFixed(1)}M` : "100K",
-            audioUrl: downloadObj ? downloadObj.url : ""
-          };
-        });
-        setSearchResults(mapped);
+        setSearchResults(resData.data.results);
       }
 
       // 2. Albums Search
-      const albResponse = await fetch(`https://jiosavnapi-production.up.railway.app/api/search/albums?query=${encodeURIComponent(query)}`);
+      const albResponse = await fetch(`http://localhost:3001/api/youtube/search?query=${encodeURIComponent(query + ' album')}`);
       const albData = await albResponse.json();
       if (albData.success && albData.data && albData.data.results) {
-        const mappedAlbums = albData.data.results.map((album: any) => {
-          const imageObj = album.image.find((i: any) => i.quality === "500x500") || album.image[album.image.length - 1];
-          return {
-            id: album.id,
-            title: album.name,
-            artist: album.artists?.primary?.map((a: any) => a.name).join(", ") || album.artist || "Various Artists",
-            coverUrl: imageObj ? imageObj.url : "https://images.unsplash.com/photo-1614613535308-eb5fbd3d2c17",
-            year: album.year
-          };
-        });
-        setAlbumResults(mappedAlbums);
+        setAlbumResults(albData.data.results);
       }
     } catch (e) {
       console.error("Search API error", e);
@@ -928,38 +854,18 @@ export default function App() {
   const handleOpenAlbum = async (albumId: string) => {
     setIsAlbumLoading(true);
     try {
-      const response = await fetch(`https://jiosavnapi-production.up.railway.app/api/albums?id=${albumId}`);
+      const response = await fetch(`http://localhost:3001/api/youtube/search?query=${encodeURIComponent(albumId)}`);
       const resData = await response.json();
-      if (resData.success && resData.data) {
-        const mappedSongs = resData.data.songs.map((song: any) => {
-          const downloadObj = song.downloadUrl.find((d: any) => d.quality === "320kbps") || song.downloadUrl[song.downloadUrl.length - 1];
-          const imageObj = song.image.find((i: any) => i.quality === "500x500") || song.image[song.image.length - 1];
-          const durationSec = song.duration || 0;
-          const mins = Math.floor(durationSec / 60);
-          const secs = durationSec % 60;
-          const durationStr = `${mins.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`;
-          
-          return {
-            id: song.id,
-            title: song.name,
-            artist: song.artists.primary.map((a: any) => a.name).join(", ") || "Unknown Artist",
-            album: song.album.name || "Unknown Album",
-            duration: durationStr,
-            coverUrl: imageObj ? imageObj.url : "https://images.unsplash.com/photo-1614613535308-eb5fbd3d2c17",
-            genre: song.language ? song.language.toUpperCase() : "UNKNOWN",
-            listeners: song.playCount ? `${(song.playCount / 1000000).toFixed(1)}M` : "100K",
-            audioUrl: downloadObj ? downloadObj.url : ""
-          };
-        });
-
-        const imageObj = resData.data.image.find((i: any) => i.quality === "500x500") || resData.data.image[resData.data.image.length - 1];
+      if (resData.success && resData.data && resData.data.results) {
+        const mappedSongs = resData.data.results;
+        const firstSong = mappedSongs[0] || {};
         
         setActiveAlbumDetails({
-          id: resData.data.id,
-          name: resData.data.name,
-          artist: resData.data.artists?.primary?.map((a: any) => a.name).join(", ") || resData.data.artist || "Various Artists",
-          coverUrl: imageObj ? imageObj.url : "https://images.unsplash.com/photo-1614613535308-eb5fbd3d2c17",
-          year: resData.data.year,
+          id: albumId,
+          name: albumId,
+          artist: firstSong.artist || "Various Artists",
+          coverUrl: firstSong.coverUrl || "https://images.unsplash.com/photo-1614613535308-eb5fbd3d2c17",
+          year: "2024",
           songs: mappedSongs
         });
       }
@@ -1113,31 +1019,57 @@ export default function App() {
 
           {/* Render Views dynamically */}
           <div className="flex-1 overflow-hidden relative flex flex-col min-h-0">
+            <div 
+              className={currentScreen === Screen.NOW_SPINNING ? "flex-1 flex flex-col relative z-0 min-h-0 overflow-hidden w-full" : "absolute inset-0 pointer-events-none -z-50"}
+              style={{ opacity: 1 }}
+            >
+              <NowSpinningScreen
+                currentTrack={currentTrack}
+                isPlaying={isPlaying}
+                togglePlay={handleTogglePlay}
+                allTracks={trendingTracks}
+                onPlayTrack={handlePlayTrack}
+                onNext={handleNextTrack}
+                onPrev={handlePrevTrack}
+                queue={queue}
+                removeFromQueue={handleRemoveFromQueue}
+                likedTracks={likedTracks}
+                onToggleLike={handleToggleLike}
+                playlists={playlists}
+                onAddToQueue={handleAddToQueue}
+                onTriggerAddToPlaylist={(track) => setPlaylistModalTrack(track)}
+                onPlayPlaylist={handlePlayPlaylist}
+                isRepeat={isRepeat}
+                toggleRepeat={() => setIsRepeat(!isRepeat)}
+                isShuffle={isShuffle}
+                toggleShuffle={() => setIsShuffle(!isShuffle)}
+                autoplayQueue={autoplayQueue}
+                activeRoomId={activeRoomId}
+              />
+            </div>
+            
+            <div 
+              className={currentScreen === Screen.JAM_TOGETHER ? "flex-1 flex flex-col relative z-0 min-h-0 overflow-hidden w-full" : "absolute inset-0 pointer-events-none -z-50"}
+              style={{ opacity: 1 }}
+            >
+              <JamTogetherScreen 
+                onPlayTrack={handlePlayTrack}
+                allTracks={trendingTracks}
+                user={user}
+                currentTrack={currentTrack || MOCK_TRACKS[0]}
+                isPlaying={isPlaying}
+                setIsPlaying={setIsPlaying}
+                setCurrentTrack={setCurrentTrack}
+                activeRoomId={activeRoomId}
+                setActiveRoomId={setActiveRoomId}
+                roomInfo={roomInfo}
+                setActiveRoomPasscode={setActiveRoomPasscode}
+                onTriggerAddToPlaylist={(track) => setPlaylistModalTrack(track)}
+                onTrackEnded={() => handleNextTrackRef.current()}
+              />
+            </div>
+
             <Suspense fallback={<div className="flex-1 flex items-center justify-center font-mono text-xs text-gray-500 bg-surface">LOADING_TERMINAL...</div>}>
-              {currentScreen === Screen.NOW_SPINNING && (
-                <NowSpinningScreen 
-                  currentTrack={currentTrack}
-                  isPlaying={isPlaying}
-                  togglePlay={handleTogglePlay}
-                  allTracks={trendingTracks}
-                  onPlayTrack={handlePlayTrack}
-                  onNext={handleNextTrack}
-                  onPrev={handlePrevTrack}
-                  queue={queue}
-                  removeFromQueue={handleRemoveFromQueue}
-                  likedTracks={likedTracks}
-                  onToggleLike={handleToggleLike}
-                  playlists={playlists}
-                  onAddToQueue={handleAddToQueue}
-                  onTriggerAddToPlaylist={(track) => setPlaylistModalTrack(track)}
-                  onPlayPlaylist={handlePlayPlaylist}
-                  isRepeat={isRepeat}
-                  toggleRepeat={() => setIsRepeat(!isRepeat)}
-                  isShuffle={isShuffle}
-                  toggleShuffle={() => setIsShuffle(!isShuffle)}
-                  autoplayQueue={autoplayQueue}
-                />
-              )}
               {currentScreen === Screen.DISCOVER && (
                 <DiscoverScreen 
                   allTracks={trendingTracks}
@@ -1181,22 +1113,6 @@ export default function App() {
                   onTriggerAddToPlaylist={(track) => setPlaylistModalTrack(track)}
                   user={user}
                   onCreatePlaylist={(name) => handleCreatePlaylist(name)}
-                />
-              )}
-              {currentScreen === Screen.JAM_TOGETHER && (
-                <JamTogetherScreen 
-                  onPlayTrack={handlePlayTrack}
-                  allTracks={trendingTracks}
-                  user={user}
-                  currentTrack={currentTrack}
-                  isPlaying={isPlaying}
-                  setIsPlaying={setIsPlaying}
-                  setCurrentTrack={setCurrentTrack}
-                  activeRoomId={activeRoomId}
-                  setActiveRoomId={setActiveRoomId}
-                  roomInfo={roomInfo}
-                  setActiveRoomPasscode={setActiveRoomPasscode}
-                  onTriggerAddToPlaylist={(track) => setPlaylistModalTrack(track)}
                 />
               )}
               {currentScreen === Screen.PROFILE && (

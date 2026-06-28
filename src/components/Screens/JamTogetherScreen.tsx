@@ -12,6 +12,7 @@ import {
   verifyRoomCredentials,
   createJamRoom
 } from "../../firebase";
+import YouTube from "react-youtube";
 
 interface JamTogetherScreenProps {
   onPlayTrack: (track: Track) => void;
@@ -26,6 +27,7 @@ interface JamTogetherScreenProps {
   roomInfo: any | null;
   setActiveRoomPasscode: (code: string | null) => void;
   onTriggerAddToPlaylist: (track: Track) => void;
+  onTrackEnded?: () => void;
 }
 
 export const JamTogetherScreen: React.FC<JamTogetherScreenProps> = ({
@@ -40,11 +42,57 @@ export const JamTogetherScreen: React.FC<JamTogetherScreenProps> = ({
   setActiveRoomId,
   roomInfo,
   setActiveRoomPasscode,
-  onTriggerAddToPlaylist
+  onTriggerAddToPlaylist,
+  onTrackEnded
 }) => {
   const [newMsg, setNewMsg] = useState<string>("");
   const [createRoomName, setCreateRoomName] = useState<string>("");
   const [createPasscode, setCreatePasscode] = useState<string>("");
+  const ytPlayerRef = useRef<any>(null);
+
+  useEffect(() => {
+    if (!activeRoomId) {
+      ytPlayerRef.current = null;
+    }
+  }, [activeRoomId]);
+
+  useEffect(() => {
+    try {
+      if (ytPlayerRef.current && ytPlayerRef.current.playVideo) {
+        if (isPlaying) {
+          ytPlayerRef.current.unMute();
+          ytPlayerRef.current.setVolume(100);
+          ytPlayerRef.current.playVideo();
+          
+          // Anti-scroll hack for iframe focus hijacking
+          setTimeout(() => {
+            document.documentElement.scrollTop = 0;
+            document.body.scrollTop = 0;
+            const mainWrapper = document.querySelector('main');
+            if (mainWrapper) mainWrapper.scrollTop = 0;
+            const appRoot = document.getElementById('root');
+            if (appRoot) appRoot.scrollTop = 0;
+          }, 10);
+        } else {
+          ytPlayerRef.current.pauseVideo();
+        }
+      }
+    } catch (e) {
+      console.warn("YT Jam Error:", e);
+    }
+  }, [isPlaying]);
+  
+  // Global listener for seek sync from PersistentPlayer
+  useEffect(() => {
+    const handleGlobalSeek = (e: Event) => {
+      const customEvent = e as CustomEvent;
+      if (ytPlayerRef.current && ytPlayerRef.current.seekTo) {
+        ytPlayerRef.current.seekTo(customEvent.detail, true);
+      }
+    };
+    window.addEventListener("yt-seek", handleGlobalSeek);
+    return () => window.removeEventListener("yt-seek", handleGlobalSeek);
+  }, []);
   
   // Song search inside active room
   const [jamSearchQuery, setJamSearchQuery] = useState<string>("");
@@ -73,29 +121,10 @@ export const JamTogetherScreen: React.FC<JamTogetherScreenProps> = ({
 
     const delayDebounceFn = setTimeout(async () => {
       try {
-        const response = await fetch(`https://jiosavnapi-production.up.railway.app/api/search/songs?query=${encodeURIComponent(jamSearchQuery.trim())}&limit=6`);
+        const response = await fetch(`http://localhost:3001/api/youtube/search?query=${encodeURIComponent(jamSearchQuery.trim())}`);
         const resData = await response.json();
         if (resData.success && resData.data && resData.data.results) {
-          const mapped = resData.data.results.map((song: any) => {
-            const downloadObj = song.downloadUrl.find((d: any) => d.quality === "320kbps") || song.downloadUrl[song.downloadUrl.length - 1];
-            const imageObj = song.image.find((i: any) => i.quality === "500x500") || song.image[song.image.length - 1];
-            const durationSec = song.duration || 0;
-            const mins = Math.floor(durationSec / 60);
-            const secs = durationSec % 60;
-            const durationStr = `${mins.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`;
-            
-            return {
-              id: song.id,
-              title: song.name,
-              artist: song.artists.primary.map((a: any) => a.name).join(", ") || "Unknown Artist",
-              album: song.album.name || "Unknown Album",
-              duration: durationStr,
-              coverUrl: imageObj ? imageObj.url : "https://images.unsplash.com/photo-1614613535308-eb5fbd3d2c17",
-              genre: song.language ? song.language.toUpperCase() : "UNKNOWN",
-              listeners: song.playCount ? `${(song.playCount / 1000000).toFixed(1)}M` : "100K",
-              audioUrl: downloadObj ? downloadObj.url : ""
-            };
-          });
+          const mapped = resData.data.results;
           setJamSuggestions(mapped);
           setShowJamSuggestions(true);
         } else {
@@ -124,10 +153,12 @@ export const JamTogetherScreen: React.FC<JamTogetherScreenProps> = ({
   
   const chatEndRef = useRef<HTMLDivElement | null>(null);
 
-  // Scroll chat to bottom
+  const chatContainerRef = useRef<HTMLDivElement | null>(null);
+
+  // Scroll chat to bottom without scrolling the whole page
   useEffect(() => {
-    if (chatEndRef.current) {
-      chatEndRef.current.scrollIntoView({ behavior: "smooth" });
+    if (chatContainerRef.current) {
+      chatContainerRef.current.scrollTop = chatContainerRef.current.scrollHeight;
     }
   }, [roomInfo?.messages]);
 
@@ -458,60 +489,106 @@ export const JamTogetherScreen: React.FC<JamTogetherScreenProps> = ({
             )}
           </div>
 
-          {/* Main Visualizer Player inside the Live Room */}
-          <div className="bg-[#1A1A1A] border-2 border-[#1A1A1A] brutalist-shadow rounded-lg p-5 flex flex-col md:flex-row gap-6 items-center relative text-[#fff9ef]">
-            <span className="absolute top-2 left-3 text-[8px] text-gray-500 font-bold tracking-widest uppercase">
-              ROOM_CURRENT_SPINNING
-            </span>
-
-            {/* Micro Disc label rotating */}
-            <div className="w-36 h-36 rounded-full bg-black border-4 border-gray-800 flex items-center justify-center shadow-inner relative flex-shrink-0">
-              <div className="absolute inset-2 rounded-full border border-gray-900 opacity-60" />
-              <div className="absolute inset-6 rounded-full border border-gray-900 opacity-40" />
-              <div className={`w-32 h-32 rounded-full flex items-center justify-center ${roomInfo?.isPlaying ? "spinning-vinyl" : ""}`}>
-                <img 
-                  src={activeRoomTrack?.coverUrl || "https://images.unsplash.com/photo-1614613535308-eb5fbd3d2c17"} 
-                  alt="Label" 
-                  referrerPolicy="no-referrer"
-                  className="w-14 h-14 rounded-full object-cover border border-gray-950"
-                />
-              </div>
-              <div className="absolute w-4 h-4 rounded-full bg-surface-container border border-gray-950 flex items-center justify-center">
-                <div className="w-1 h-1 rounded-full bg-gray-500" />
-              </div>
+          {/* Retro TV Player */}
+          <div className="bg-[#5c4033] border-8 border-[#3b2a21] rounded-2xl p-4 flex flex-col items-center relative brutalist-shadow shadow-2xl">
+            {/* TV Antennas */}
+            <div className="absolute -top-12 left-1/2 -translate-x-1/2 flex gap-4">
+              <div className="w-1 h-16 bg-gray-400 rotate-[-30deg] border border-gray-600 rounded"></div>
+              <div className="w-1 h-16 bg-gray-400 rotate-[30deg] border border-gray-600 rounded"></div>
             </div>
 
-            {/* Song Meta Descriptions and tags */}
-            <div className="flex-1 flex flex-col gap-1.5 text-center md:text-left">
-              <span className="text-[9px] text-[#C8B89A] font-bold tracking-widest uppercase">
-                {roomInfo?.hostId === user?.uid ? "YOU ARE HOST / DJ" : "LISTENING SYNC"}
-              </span>
-              <h3 className="text-base font-bold text-white tracking-wide leading-none">
-                {activeRoomTrack?.title || "NO TRACK SPINNING"}
-              </h3>
-              <p className="text-[10px] text-gray-400 font-medium uppercase tracking-tighter">
-                {activeRoomTrack?.artist || "The host is choosing a frequency"}
-              </p>
-              
-              <div className="flex flex-wrap items-center justify-center md:justify-start gap-1.5 mt-2">
-                <span className="bg-[#a04100]/20 border border-primary/30 text-primary text-[8px] font-bold px-2 py-0.5 rounded">
-                  FIRESTORE CHANNEL
-                </span>
-                <span className="bg-[#C8B89A]/10 border border-border-tan/30 text-border-tan text-[8px] font-bold px-2 py-0.5 rounded">
-                  STREAM SYNC
-                </span>
+            {/* TV Screen Enclosure */}
+            <div className="w-full bg-[#111] p-3 rounded-xl border-4 border-gray-800 shadow-inner relative overflow-hidden flex flex-col md:flex-row gap-4">
+              {/* Actual Screen */}
+              <div className="flex-1 bg-black rounded-lg border-2 border-gray-700 relative overflow-hidden flex items-center justify-center aspect-[16/10] pointer-events-auto">
+                <div className="absolute inset-0 pointer-events-none rounded-lg shadow-[inset_0_0_100px_rgba(0,0,0,0.9)] z-20"></div>
+                
+                {currentTrack?.audioUrl && (
+                  <YouTube
+                    videoId={currentTrack.audioUrl}
+                    opts={{
+                      width: '100%',
+                      height: '100%',
+                      playerVars: {
+                        autoplay: isPlaying ? 1 : 0,
+                        controls: 1,
+                        disablekb: 1,
+                        fs: 0,
+                        rel: 0
+                      },
+                    }}
+                    onReady={(e) => {
+                      ytPlayerRef.current = e.target;
+                      e.target.unMute();
+                      e.target.setVolume(100);
+                      
+                      const currentTime = getAudioCurrentTime();
+                      if (currentTime > 0) {
+                        e.target.seekTo(currentTime, true);
+                      }
+                      
+                      if (isPlaying) e.target.playVideo();
+                    }}
+                    onStateChange={(e) => {
+                      if (e.target.isMuted()) {
+                        e.target.unMute();
+                      }
+                      if (e.data === 1 && !isPlaying) setIsPlaying(true);
+                      if (e.data === 2 && isPlaying) setIsPlaying(false);
+                      if (e.data === 0) {
+                        if (onTrackEnded) onTrackEnded();
+                        else setIsPlaying(false);
+                      }
+                    }}
+                    className="absolute inset-0 w-full h-full scale-105"
+                  />
+                )}
+                {!currentTrack?.audioUrl && (
+                  <div className="text-gray-500 font-mono text-xs flex flex-col items-center gap-2">
+                    <Radio className="w-6 h-6 animate-pulse" />
+                    <span>NO SIGNAL</span>
+                  </div>
+                )}
               </div>
 
-              {/* Action play button to listen locally */}
-              {activeRoomTrack && (
-                <button 
-                  onClick={syncLocalHeadset}
-                  className="mt-3 self-center md:self-start bg-primary text-white border border-primary px-3 py-1.5 rounded text-[10px] font-bold flex items-center gap-1 hover:bg-opacity-95 cursor-pointer"
-                >
-                  <Volume2 className="w-3.5 h-3.5" />
-                  <span>SYNC LOCAL HEADSET</span>
-                </button>
-              )}
+              {/* TV Dials Panel */}
+              <div className="w-full md:w-24 bg-[#2a2a2a] rounded-lg border-2 border-gray-800 p-2 flex flex-row md:flex-col items-center justify-between gap-4 shadow-inner">
+                {/* Speaker Grill */}
+                <div className="w-full h-12 md:h-24 border-2 border-gray-900 bg-black rounded flex flex-wrap gap-1 p-1 overflow-hidden opacity-80">
+                  {Array.from({ length: 40 }).map((_, i) => (
+                    <div key={i} className="w-1.5 h-1.5 bg-gray-800 rounded-full"></div>
+                  ))}
+                </div>
+                
+                <div className="flex flex-row md:flex-col gap-3 items-center">
+                  <div className="w-10 h-10 rounded-full bg-gray-300 border-b-4 border-gray-500 shadow flex items-center justify-center cursor-pointer active:border-b-0 active:translate-y-1">
+                    <div className="w-1 h-4 bg-gray-800 rounded"></div>
+                  </div>
+                  <div className="w-8 h-8 rounded-full bg-gray-400 border-b-4 border-gray-600 shadow flex items-center justify-center cursor-pointer active:border-b-0 active:translate-y-1 text-[8px] font-bold">
+                    UHF
+                  </div>
+                </div>
+              </div>
+            </div>
+            
+            {/* Song Meta Information Below TV */}
+            <div className="w-full mt-4 flex items-center justify-between text-[#FAF3E0] px-2">
+              <div className="flex flex-col">
+                <span className="text-[10px] text-[#C8B89A] font-bold tracking-widest uppercase">
+                  {roomInfo?.hostId === user?.uid ? "YOU ARE HOST / DJ" : "LISTENING SYNC"}
+                </span>
+                <h3 className="text-sm font-bold truncate max-w-[200px] tracking-wide leading-none">
+                  {activeRoomTrack?.title || "NO TRACK SPINNING"}
+                </h3>
+                <p className="text-[10px] text-gray-400 font-medium uppercase tracking-tighter">
+                  {activeRoomTrack?.artist || "The host is choosing a frequency"}
+                </p>
+              </div>
+              <div className="flex flex-col items-end gap-1">
+                <span className="bg-[#a04100]/50 border border-primary text-white text-[8px] font-bold px-2 py-0.5 rounded shadow">
+                  FIRESTORE SYNC
+                </span>
+              </div>
             </div>
           </div>
 
@@ -590,7 +667,7 @@ export const JamTogetherScreen: React.FC<JamTogetherScreenProps> = ({
           {/* Activity Chat Feed */}
           <div className="flex-1 flex flex-col justify-between min-h-0">
             {/* Scroll messages box */}
-            <div className="flex-1 overflow-y-auto pr-1 flex flex-col gap-2.5 min-h-0 scrollbar-hide">
+            <div ref={chatContainerRef} className="flex-1 overflow-y-auto pr-1 flex flex-col gap-2.5 min-h-0 scrollbar-hide">
               {messages.map((m) => {
                 let textCol = "text-text-charcoal";
                 let bgCol = "bg-surface";
@@ -621,7 +698,6 @@ export const JamTogetherScreen: React.FC<JamTogetherScreenProps> = ({
                   </div>
                 );
               })}
-              <div ref={chatEndRef} />
             </div>
 
             {/* Input message form */}

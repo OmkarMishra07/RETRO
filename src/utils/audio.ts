@@ -119,6 +119,11 @@ export function playAudioStream(url: string, onEnded?: () => void): Promise<void
 
     stopSynthTone();
     
+    // If it's a YouTube video ID (no http), we skip htmlAudio playback
+    if (!url.startsWith("http://") && !url.startsWith("https://")) {
+      return Promise.resolve();
+    }
+    
     // Check if we are just resuming the same track
     if (htmlAudio && (htmlAudio.src === url || htmlAudio.src === encodeURI(url))) {
       return htmlAudio.play();
@@ -218,6 +223,9 @@ export function playSynthTone(frequencyStr: string | undefined, onEnded?: () => 
     }, 1000);
 
     const freq = parseFloat(frequencyStr || "220");
+    if (Number.isNaN(freq)) {
+      return; // Skip synth if it's a Youtube ID or invalid frequency
+    }
     oscillator = audioCtx.createOscillator();
     gainNode = audioCtx.createGain();
 
@@ -289,6 +297,10 @@ export function updateSynthFrequency(frequencyStr: string | undefined) {
   }
   if (oscillator && audioCtx) {
     const freq = parseFloat(frequencyStr || "220");
-    oscillator.frequency.exponentialRampToValueAtTime(freq, audioCtx.currentTime + 0.3);
+    if (!Number.isNaN(freq) && freq > 0) {
+      try {
+        oscillator.frequency.exponentialRampToValueAtTime(freq, audioCtx.currentTime + 0.3);
+      } catch (e) {}
+    }
   }
 }

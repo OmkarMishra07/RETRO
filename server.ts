@@ -7,6 +7,7 @@ import fs from "fs";
 import path from "path";
 import { fileURLToPath } from "url";
 import dotenv from "dotenv";
+import ytSearch from "yt-search";
 
 dotenv.config();
 
@@ -249,6 +250,31 @@ app.post("/api/user/:uid/like", async (req, res) => {
     res.status(500).json({ error: "Firestore toggle like error" });
   }
 });
+
+// API: YouTube Search
+app.get("/api/youtube/search", async (req, res) => {
+  const { query } = req.query;
+  if (!query) return res.status(400).json({ error: "Missing query parameter" });
+
+  try {
+    const r = await ytSearch(query as string);
+    const videos = r.videos.slice(0, 15).map(v => ({
+      id: v.videoId,
+      title: v.title,
+      artist: v.author.name,
+      album: "YouTube",
+      duration: v.timestamp,
+      coverUrl: v.image,
+      genre: "YOUTUBE",
+      audioUrl: v.videoId // We will use this as the video ID for embedding
+    }));
+    res.json({ success: true, data: { results: videos } });
+  } catch (err) {
+    console.error("YouTube search error:", err);
+    res.status(500).json({ error: "YouTube search error" });
+  }
+});
+
 
 // API: Save Recently Played Song
 app.post("/api/user/:uid/recently-played", async (req, res) => {

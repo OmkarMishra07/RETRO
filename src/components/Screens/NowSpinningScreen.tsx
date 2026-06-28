@@ -24,6 +24,7 @@ interface NowSpinningScreenProps {
   isShuffle?: boolean;
   toggleShuffle?: () => void;
   autoplayQueue?: Track[];
+  activeRoomId?: string | null;
 }
 
 type Tab = "queue" | "liked" | "playlist" | "search";
@@ -48,7 +49,8 @@ export const NowSpinningScreen: React.FC<NowSpinningScreenProps> = ({
   toggleRepeat = () => {},
   isShuffle = false,
   toggleShuffle = () => {},
-  autoplayQueue = []
+  autoplayQueue = [],
+  activeRoomId = null
 }) => {
   const [activeTab, setActiveTab] = useState<Tab>("queue");
   const [spinningSearchQuery, setSpinningSearchQuery] = useState("");
@@ -89,29 +91,10 @@ export const NowSpinningScreen: React.FC<NowSpinningScreenProps> = ({
 
     const delayDebounceFn = setTimeout(async () => {
       try {
-        const response = await fetch(`https://jiosavnapi-production.up.railway.app/api/search/songs?query=${encodeURIComponent(spinningSearchQuery.trim())}&limit=5`);
+        const response = await fetch(`http://localhost:3001/api/youtube/search?query=${encodeURIComponent(spinningSearchQuery.trim())}`);
         const resData = await response.json();
         if (resData.success && resData.data && resData.data.results) {
-          const mapped = resData.data.results.map((song: any) => {
-            const downloadObj = song.downloadUrl.find((d: any) => d.quality === "320kbps") || song.downloadUrl[song.downloadUrl.length - 1];
-            const imageObj = song.image.find((i: any) => i.quality === "500x500") || song.image[song.image.length - 1];
-            const durationSec = song.duration || 0;
-            const mins = Math.floor(durationSec / 60);
-            const secs = durationSec % 60;
-            const durationStr = `${mins.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`;
-            
-            return {
-              id: song.id,
-              title: song.name,
-              artist: song.artists.primary.map((a: any) => a.name).join(", ") || "Unknown Artist",
-              album: song.album.name || "Unknown Album",
-              duration: durationStr,
-              coverUrl: imageObj ? imageObj.url : "https://images.unsplash.com/photo-1614613535308-eb5fbd3d2c17",
-              genre: song.language ? song.language.toUpperCase() : "UNKNOWN",
-              listeners: song.playCount ? `${(song.playCount / 1000000).toFixed(1)}M` : "100K",
-              audioUrl: downloadObj ? downloadObj.url : ""
-            };
-          });
+          const mapped = resData.data.results;
           setSuggestions(mapped);
           setShowSuggestions(true);
         } else {
@@ -133,29 +116,10 @@ export const NowSpinningScreen: React.FC<NowSpinningScreenProps> = ({
     setActiveTab("search");
     setIsSearching(true);
     try {
-      const response = await fetch(`https://jiosavnapi-production.up.railway.app/api/search/songs?query=${encodeURIComponent(spinningSearchQuery.trim())}`);
+      const response = await fetch(`http://localhost:3001/api/youtube/search?query=${encodeURIComponent(spinningSearchQuery.trim())}`);
       const resData = await response.json();
       if (resData.success && resData.data && resData.data.results) {
-        const mapped = resData.data.results.map((song: any) => {
-          const downloadObj = song.downloadUrl.find((d: any) => d.quality === "320kbps") || song.downloadUrl[song.downloadUrl.length - 1];
-          const imageObj = song.image.find((i: any) => i.quality === "500x500") || song.image[song.image.length - 1];
-          const durationSec = song.duration || 0;
-          const mins = Math.floor(durationSec / 60);
-          const secs = durationSec % 60;
-          const durationStr = `${mins.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`;
-          
-          return {
-            id: song.id,
-            title: song.name,
-            artist: song.artists.primary.map((a: any) => a.name).join(", ") || "Unknown Artist",
-            album: song.album.name || "Unknown Album",
-            duration: durationStr,
-            coverUrl: imageObj ? imageObj.url : "https://images.unsplash.com/photo-1614613535308-eb5fbd3d2c17",
-            genre: song.language ? song.language.toUpperCase() : "UNKNOWN",
-            listeners: song.playCount ? `${(song.playCount / 1000000).toFixed(1)}M` : "100K",
-            audioUrl: downloadObj ? downloadObj.url : ""
-          };
-        });
+        const mapped = resData.data.results;
         setSpinningSearchResults(mapped);
       } else {
         setSpinningSearchResults([]);
@@ -258,6 +222,7 @@ export const NowSpinningScreen: React.FC<NowSpinningScreenProps> = ({
             isShuffle={isShuffle}
             toggleShuffle={toggleShuffle}
             onTriggerAddToPlaylist={() => onTriggerAddToPlaylist(currentTrack)}
+            activeRoomId={activeRoomId}
           />
         </div>
 
