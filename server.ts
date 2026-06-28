@@ -251,33 +251,43 @@ app.post("/api/user/:uid/like", async (req, res) => {
   }
 });
 
-// API: YouTube Search
+// API: YouTube Search (Proxy to musicapi.x007)
 app.get("/api/youtube/search", async (req, res) => {
   const { query } = req.query;
   if (!query) return res.status(400).json({ error: "Missing query parameter" });
 
   try {
-    const r = await ytSearch(query as string);
-    const videos = r.videos.slice(0, 15).map(v => ({
-      id: v.videoId,
-      title: v.title,
-      artist: v.author.name,
-      album: "YouTube",
-      duration: v.timestamp,
-      coverUrl: v.image,
-      genre: "YOUTUBE",
-      audioUrl: v.videoId // We will use this as the video ID for embedding
-    }));
-    res.json({ success: true, data: { results: videos } });
+    const fetchMod = await import("node-fetch");
+    const fetch = fetchMod.default;
+    // Using seevn (Saavn) or wunk (Wynk) for good English/Hindi coverage
+    const r = await fetch(`https://musicapi.x007.workers.dev/search?q=${encodeURIComponent(query as string)}&searchEngine=seevn`);
+    const data = await r.json() as any;
+    
+    if (data.status === 200 && data.response) {
+      const tracks = data.response.map((song: any) => ({
+        id: song.id,
+        title: song.title || "Unknown Title",
+        artist: "Various Artists", // The API doesn't return artist
+        album: "Search Result",
+        duration: "03:30",
+        coverUrl: song.img || "https://images.unsplash.com/photo-1614613535308-eb5fbd3d2c17",
+        genre: "STREAM",
+        audioUrl: song.id // We pass the internal ID to the stream endpoint
+      }));
+      res.json({ success: true, data: { results: tracks } });
+    } else {
+      res.json({ success: true, data: { results: [] } });
+    }
   } catch (err) {
-    console.error("YouTube search error:", err);
-    res.status(500).json({ error: "YouTube search error" });
+    console.error("Search error:", err);
+    res.status(500).json({ error: "Search error" });
   }
 });
+
 // Stream URL Cache (valid for 5 hours)
 const streamCache = new Map<string, { url: string, expiry: number }>();
 
-// API: YouTube Direct Stream URL (InnerTube)
+// API: YouTube Direct Stream URL (Proxy to musicapi.x007/fetch)
 app.get("/api/youtube/stream/:videoId", async (req, res) => {
   const { videoId } = req.params;
   if (!videoId) return res.status(400).json({ error: "Missing videoId" });
@@ -292,41 +302,19 @@ app.get("/api/youtube/stream/:videoId", async (req, res) => {
     const fetchMod = await import("node-fetch");
     const fetch = fetchMod.default;
     
-    const response = await fetch("https://music.youtube.com/youtubei/v1/player", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        context: {
-          client: {
-            clientName: "ANDROID_MUSIC",
-            clientVersion: "5.01"
-          }
-        },
-        videoId: videoId
-      })
-    });
-    
+    const response = await fetch(`https://musicapi.x007.workers.dev/fetch?id=${videoId}`);
     const data = await response.json() as any;
-    const formats = data.streamingData?.adaptiveFormats || [];
-    const audioFormats = formats.filter((f: any) => f.mimeType?.includes("audio/"));
     
-    if (audioFormats.length === 0) {
-      return res.status(404).json({ error: "No audio streams found" });
-    }
-
-    // Sort by highest bitrate
-    audioFormats.sort((a: any, b: any) => (b.averageBitrate || 0) - (a.averageBitrate || 0));
-    const streamUrl = audioFormats[0].url;
-
-    if (streamUrl) {
+    if (data.status === 200 && data.response) {
+      const streamUrl = data.response;
       streamCache.set(videoId, { url: streamUrl, expiry: now + 5 * 60 * 60 * 1000 });
       return res.json({ success: true, url: streamUrl });
     } else {
-      return res.status(404).json({ error: "Stream URL missing in YouTube response" });
+      return res.status(404).json({ error: "Stream URL not found" });
     }
   } catch (err) {
-    console.error("InnerTube API error:", err);
-    res.status(500).json({ error: "InnerTube API error" });
+    console.error("Stream fetch error:", err);
+    res.status(500).json({ error: "Stream fetch error" });
   }
 });
 
