@@ -274,7 +274,61 @@ app.get("/api/youtube/search", async (req, res) => {
     res.status(500).json({ error: "YouTube search error" });
   }
 });
+// Stream URL Cache (valid for 5 hours)
+const streamCache = new Map<string, { url: string, expiry: number }>();
 
+// API: YouTube Direct Stream URL (InnerTube)
+app.get("/api/youtube/stream/:videoId", async (req, res) => {
+  const { videoId } = req.params;
+  if (!videoId) return res.status(400).json({ error: "Missing videoId" });
+
+  const now = Date.now();
+  const cached = streamCache.get(videoId);
+  if (cached && cached.expiry > now) {
+    return res.json({ success: true, url: cached.url });
+  }
+
+  try {
+    const fetchMod = await import("node-fetch");
+    const fetch = fetchMod.default;
+    
+    const response = await fetch("https://music.youtube.com/youtubei/v1/player", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        context: {
+          client: {
+            clientName: "ANDROID_MUSIC",
+            clientVersion: "5.01"
+          }
+        },
+        videoId: videoId
+      })
+    });
+    
+    const data = await response.json() as any;
+    const formats = data.streamingData?.adaptiveFormats || [];
+    const audioFormats = formats.filter((f: any) => f.mimeType?.includes("audio/"));
+    
+    if (audioFormats.length === 0) {
+      return res.status(404).json({ error: "No audio streams found" });
+    }
+
+    // Sort by highest bitrate
+    audioFormats.sort((a: any, b: any) => (b.averageBitrate || 0) - (a.averageBitrate || 0));
+    const streamUrl = audioFormats[0].url;
+
+    if (streamUrl) {
+      streamCache.set(videoId, { url: streamUrl, expiry: now + 5 * 60 * 60 * 1000 });
+      return res.json({ success: true, url: streamUrl });
+    } else {
+      return res.status(404).json({ error: "Stream URL missing in YouTube response" });
+    }
+  } catch (err) {
+    console.error("InnerTube API error:", err);
+    res.status(500).json({ error: "InnerTube API error" });
+  }
+});
 
 // API: Save Recently Played Song
 app.post("/api/user/:uid/recently-played", async (req, res) => {

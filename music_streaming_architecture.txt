@@ -1,0 +1,62 @@
+1. Frontend
+What to build: React or Next.js app with:
+
+Search bar + results
+Music player (HTML <audio> tag with controls)
+Queue management
+Album art, lyrics panel
+Skeleton loaders while fetching
+
+Key libraries: Howler.js or native <audio> for playback, Zustand or Redux for player state, TailwindCSS for UI.
+
+2. Backend API
+Language: Python (FastAPI) or Node.js (Express). You already have Python from your existing code, so FastAPI is the natural fit.
+Endpoints you need:
+GET /search?q=shape+of+you
+GET /song/:videoId          ← metadata
+GET /stream/:videoId        ← returns the CDN stream URL
+GET /lyrics/:browseId
+GET /artist/:artistId
+GET /album/:browseId
+
+3. The InnerTube Client — the real engine
+The app communicates with YouTube Music's backend through a custom implementation of the InnerTube API, the protobuf-based internal interface used by official YouTube clients. Grokipedia
+You already have ytmusicapi — that's exactly this. For the stream URL specifically, instead of yt_dlp (which is slow and heavy), you call InnerTube's /youtubei/v1/player endpoint directly:
+python# What Metrolist does — directly hitting InnerTube player endpoint
+POST https://music.youtube.com/youtubei/v1/player
+{
+  "context": {
+    "client": {
+      "clientName": "ANDROID_MUSIC",
+      "clientVersion": "5.01"
+    }
+  },
+  "videoId": "dQw4w9WgXcQ"
+}
+# Returns: streamingData.adaptiveFormats[] with direct CDN URLs
+This is fast (no spawning yt_dlp processes), returns audio URLs directly, and is exactly what Metrolist does.
+
+4. The Critical Architecture Decision
+Return the CDN URL to the browser — don't proxy audio through your server.
+❌ Wrong: Browser → Your server → YouTube CDN → Your server → Browser
+✅ Right:  Browser → Your server (gets URL) → Browser → YouTube CDN directly
+Your /stream/:videoId endpoint just returns the URL string. The browser's <audio src="..."> then fetches from YouTube's CDN directly — your server never touches the audio bytes. This is how Metrolist works on a device and what makes it scalable.
+
+5. Redis Cache — absolutely essential
+Stream URLs are valid for ~6 hours. Cache them:
+python# Pseudocode
+def get_stream(video_id):
+    cached = redis.get(f"stream:{video_id}")
+    if cached:
+        return cached
+    
+    url = innertube_get_stream_url(video_id)
+    redis.setex(f"stream:{video_id}", 21600, url)  # 6hr TTL
+    return url
+Also cache search results (5 min TTL) and lyrics (permanent).
+
+6. Full Tech Stack Summary
+LayerTechnologyWhyFrontendReact + Next.jsSSR for speed, easy deploymentStylingTailwindCSSFast UI buildingPlayerHTML <audio> + Howler.jsNative streaming, no overheadBackendFastAPI (Python)You already know PythonInnerTubeytmusicapiYou already have itCacheRedisStream URL caching is criticalDatabasePostgreSQLUser playlists, history (optional)DeploymentRailway / Render / VPSSimple hosting
+
+7. What Makes This Different From Your Original Code
+Your original code used yt_dlp which spawned a subprocess, took 2-3 seconds, and proxied everything through your server. Replacing that one function with a direct InnerTube /player call — and returning the URL to the client instead of proxying audio — is the architectural shift that makes this scalable.

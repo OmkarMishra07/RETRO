@@ -109,7 +109,7 @@ export function getAnalyserData() {
   }
 }
 
-export function playAudioStream(url: string, onEnded?: () => void): Promise<void> | void {
+export async function playAudioStream(url: string, onEnded?: () => void): Promise<void> {
   try {
     const isResuming = (url === lastSource);
     lastSource = url;
@@ -119,13 +119,26 @@ export function playAudioStream(url: string, onEnded?: () => void): Promise<void
 
     stopSynthTone();
     
-    // If it's a YouTube video ID (no http), we skip htmlAudio playback
+    let playUrl = url;
+    // If it's a YouTube video ID (no http), fetch the direct InnerTube CDN URL
     if (!url.startsWith("http://") && !url.startsWith("https://")) {
-      return Promise.resolve();
+      try {
+        const API_BASE = import.meta.env ? (import.meta.env.PROD ? "https://retro-959938719772.asia-south1.run.app" : "") : "";
+        const res = await fetch(`${API_BASE}/api/youtube/stream/${url}`);
+        const data = await res.json();
+        if (data.success && data.url) {
+          playUrl = data.url;
+        } else {
+          throw new Error("Stream URL not found");
+        }
+      } catch (err) {
+        console.error("Failed to fetch YouTube stream URL:", err);
+        return Promise.reject(err);
+      }
     }
     
     // Check if we are just resuming the same track
-    if (htmlAudio && (htmlAudio.src === url || htmlAudio.src === encodeURI(url))) {
+    if (htmlAudio && (htmlAudio.src === playUrl || htmlAudio.src === encodeURI(playUrl))) {
       return htmlAudio.play();
     }
     
@@ -138,7 +151,6 @@ export function playAudioStream(url: string, onEnded?: () => void): Promise<void
     }
     
     // Only use CORS on desktop. Mobile CDNs often fail CORS, causing the audio to break entirely.
-    // Without CORS, the visualizer will be flat, but the audio will PLAY perfectly.
     const isMobile = /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent);
     if (!isMobile) {
       htmlAudio.crossOrigin = "anonymous";
@@ -146,7 +158,7 @@ export function playAudioStream(url: string, onEnded?: () => void): Promise<void
       htmlAudio.removeAttribute("crossOrigin");
     }
     
-    htmlAudio.src = url;
+    htmlAudio.src = playUrl;
     htmlAudio.loop = isAudioLoopEnabled;
     
     // Only connect if we are using crossOrigin, otherwise it will taint the context and throw errors on Safari
@@ -195,8 +207,12 @@ export function getAudioCurrentTime(): number {
 }
 
 export function playSynthTone(frequencyStr: string | undefined, onEnded?: () => void): Promise<void> | void {
-  // If the audio URL is actually a full link (HTTP/HTTPS), run playAudioStream instead!
-  if (frequencyStr && (frequencyStr.startsWith("http://") || frequencyStr.startsWith("https://"))) {
+  if (!frequencyStr) return;
+  
+  // If it's not a purely numeric frequency, it's an audio URL or YouTube Video ID
+  const isNumeric = !Number.isNaN(parseFloat(frequencyStr)) && parseFloat(frequencyStr).toString() === frequencyStr;
+  
+  if (!isNumeric) {
     return playAudioStream(frequencyStr, onEnded);
   }
 
