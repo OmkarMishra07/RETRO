@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useRef } from "react";
 import { Track, Listener, ChatMessage } from "../../types";
+import { API_BASE } from "../../config";
 import { Radio, Users, Sparkles, Send, Plus, Volume2, Globe, MessageSquare, DoorOpen, Search } from "lucide-react";
 import { seekAudio, getAudioCurrentTime } from "../../utils/audio";
 import { 
@@ -121,7 +122,7 @@ export const JamTogetherScreen: React.FC<JamTogetherScreenProps> = ({
 
     const delayDebounceFn = setTimeout(async () => {
       try {
-        const response = await fetch(`/api/youtube/search?query=${encodeURIComponent(jamSearchQuery.trim())}`);
+        const response = await fetch(`${API_BASE}/api/youtube/search?query=${encodeURIComponent(jamSearchQuery.trim())}`);
         const resData = await response.json();
         if (resData.success && resData.data && resData.data.results) {
           const mapped = resData.data.results;

@@ -2,6 +2,7 @@ import React, { useState, useEffect, lazy, Suspense } from "react";
 import { Screen, Track, UserProfile } from "./types";
 import { MOCK_TRACKS, MOCK_PROFILE } from "./data";
 import { playSynthTone, stopSynthTone, updateSynthFrequency, getAudioCurrentTime, seekAudio, setAudioLoop, initAudio } from "./utils/audio";
+import { API_BASE } from "./config";
 import { toggleLikeTrack, addRecentlyPlayed, joinJamRoom, leaveJamRoom, updateJamRoomTrack, addPlaylist, addTrackToPlaylist, checkRedirectResult, logAnalyticsEvent, auth, onAuthStateChanged, syncUserProfile, signOut, sendJamRoomMessage } from "./firebase";
 
 import { Sidebar } from "./components/Sidebar";
@@ -227,7 +228,7 @@ export default function App() {
   useEffect(() => {
     const fetchTrending = async () => {
       try {
-        const response = await fetch("/api/youtube/search?query=trending+music");
+        const response = await fetch(`${API_BASE}/api/youtube/search?query=trending+music`);
         const resData = await response.json();
         if (resData.success && resData.data && resData.data.results) {
           const mapped = resData.data.results;
@@ -243,7 +244,7 @@ export default function App() {
     };
     const fetchTrendingAlbums = async () => {
       try {
-        const response = await fetch("/api/youtube/search?query=latest+music+albums");
+        const response = await fetch(`${API_BASE}/api/youtube/search?query=latest+music+albums`);
         const resData = await response.json();
         if (resData.success && resData.data && resData.data.results) {
           const mapped = resData.data.results;
@@ -680,7 +681,7 @@ export default function App() {
       const primaryArtist = targetArtists[0] || track.artist;
       if (primaryArtist) {
         try {
-          const response = await fetch(`/api/youtube/search?query=${encodeURIComponent(primaryArtist)}`);
+          const response = await fetch(`${API_BASE}/api/youtube/search?query=${encodeURIComponent(primaryArtist)}`);
           const resData = await response.json();
           if (resData.success && resData.data && resData.data.results) {
             const mapped = resData.data.results.filter((t: Track) => t.id !== track.id && t.audioUrl && !playedHistory.includes(t.id));
@@ -833,14 +834,14 @@ export default function App() {
     setAlbumResults([]);
     try {
       // 1. Songs Search
-      const response = await fetch(`/api/youtube/search?query=${encodeURIComponent(query)}`);
+      const response = await fetch(`${API_BASE}/api/youtube/search?query=${encodeURIComponent(query)}`);
       const resData = await response.json();
       if (resData.success && resData.data && resData.data.results) {
         setSearchResults(resData.data.results);
       }
 
       // 2. Albums Search
-      const albResponse = await fetch(`/api/youtube/search?query=${encodeURIComponent(query + ' album')}`);
+      const albResponse = await fetch(`${API_BASE}/api/youtube/search?query=${encodeURIComponent(query + ' album')}`);
       const albData = await albResponse.json();
       if (albData.success && albData.data && albData.data.results) {
         setAlbumResults(albData.data.results);
@@ -854,7 +855,7 @@ export default function App() {
   const handleOpenAlbum = async (albumId: string) => {
     setIsAlbumLoading(true);
     try {
-      const response = await fetch(`/api/youtube/search?query=${encodeURIComponent(albumId)}`);
+      const response = await fetch(`${API_BASE}/api/youtube/search?query=${encodeURIComponent(albumId)}`);
       const resData = await response.json();
       if (resData.success && resData.data && resData.data.results) {
         const mappedSongs = resData.data.results;

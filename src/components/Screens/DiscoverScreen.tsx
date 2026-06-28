@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useRef } from "react";
 import { Track } from "../../types";
+import { API_BASE } from "../../config";
 import { POPULAR_ARTISTS } from "../../data";
 import { Search, Compass, Play, Plus, Sparkles, TrendingUp, ListPlus } from "lucide-react";
 
@@ -58,7 +59,7 @@ export const DiscoverScreen: React.FC<DiscoverScreenProps> = ({
 
     const delayDebounce = setTimeout(async () => {
       try {
-        const response = await fetch(`/api/youtube/search?query=${encodeURIComponent(searchVal.trim())}`);
+        const response = await fetch(`${API_BASE}/api/youtube/search?query=${encodeURIComponent(searchVal.trim())}`);
         const resData = await response.json();
         if (resData.success && resData.data && resData.data.results) {
           const mapped = resData.data.results;

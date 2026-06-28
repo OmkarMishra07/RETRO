@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useRef } from "react";
 import { Track } from "../../types";
+import { API_BASE } from "../../config";
 import { Turntable } from "../Turntable";
 import { Sparkles, ListMusic, Heart, Music, Search, Plus, Play, Trash2, ListPlus } from "lucide-react";
 
@@ -91,7 +92,7 @@ export const NowSpinningScreen: React.FC<NowSpinningScreenProps> = ({
 
     const delayDebounceFn = setTimeout(async () => {
       try {
-        const response = await fetch(`/api/youtube/search?query=${encodeURIComponent(spinningSearchQuery.trim())}`);
+        const response = await fetch(`${API_BASE}/api/youtube/search?query=${encodeURIComponent(spinningSearchQuery.trim())}`);
         const resData = await response.json();
         if (resData.success && resData.data && resData.data.results) {
           const mapped = resData.data.results;
@@ -116,7 +117,7 @@ export const NowSpinningScreen: React.FC<NowSpinningScreenProps> = ({
     setActiveTab("search");
     setIsSearching(true);
     try {
-      const response = await fetch(`/api/youtube/search?query=${encodeURIComponent(spinningSearchQuery.trim())}`);
+      const response = await fetch(`${API_BASE}/api/youtube/search?query=${encodeURIComponent(spinningSearchQuery.trim())}`);
       const resData = await response.json();
       if (resData.success && resData.data && resData.data.results) {
         const mapped = resData.data.results;
