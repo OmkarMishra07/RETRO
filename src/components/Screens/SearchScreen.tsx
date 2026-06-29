@@ -61,7 +61,7 @@ export const SearchScreen: React.FC<SearchScreenProps> = ({
                     src={album.coverUrl} 
                     alt="Cover" 
                     referrerPolicy="no-referrer"
-                    className="w-full h-full object-cover rounded-xs"
+                    className="absolute inset-0 w-full h-full object-cover rounded-xs"
                   />
                   <div className="absolute w-8 h-8 rounded-full bg-surface-container/60 cd-inner-ring border border-gray-400 flex items-center justify-center">
                     <div className="w-2.5 h-2.5 rounded-full bg-gray-600" />
@@ -114,7 +114,7 @@ export const SearchScreen: React.FC<SearchScreenProps> = ({
                   src={track.coverUrl} 
                   alt="Cover" 
                   referrerPolicy="no-referrer"
-                  className="w-full h-full object-cover rounded-xs opacity-90"
+                  className="absolute inset-0 w-full h-full object-cover rounded-xs opacity-90"
                 />
                 <div className="absolute w-12 h-12 rounded-full bg-surface-container/60 cd-inner-ring border border-gray-400 flex items-center justify-center">
                   <div className="w-3.5 h-3.5 rounded-full bg-gray-600" />

@@ -1304,6 +1304,7 @@ export default function App() {
                         <img 
                           src={pl.coverUrl || "https://images.unsplash.com/photo-1614613535308-eb5fbd3d2c17?auto=format&fit=crop&w=150&q=75"} 
                           alt="Cover" 
+                          referrerPolicy="no-referrer"
                           className="w-9 h-9 object-cover rounded border border-border-tan flex-shrink-0"
                         />
                         <div className="min-w-0">

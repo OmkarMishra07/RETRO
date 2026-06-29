@@ -187,6 +187,7 @@ export const NowSpinningScreen: React.FC<NowSpinningScreenProps> = ({
                     <img 
                       src={track.coverUrl} 
                       alt="Cover" 
+                      referrerPolicy="no-referrer"
                       className="w-7 h-7 object-cover rounded border border-border-tan"
                     />
                     <div className="min-w-0 flex-1">
@@ -271,6 +272,7 @@ export const NowSpinningScreen: React.FC<NowSpinningScreenProps> = ({
                           <img 
                             src={track.coverUrl} 
                             alt="Cover" 
+                            referrerPolicy="no-referrer"
                             className="w-9 h-9 object-cover rounded border border-border-tan flex-shrink-0"
                           />
                           <div className="min-w-0">
@@ -319,6 +321,7 @@ export const NowSpinningScreen: React.FC<NowSpinningScreenProps> = ({
                             <img 
                               src={track.coverUrl} 
                               alt="Cover" 
+                              referrerPolicy="no-referrer"
                               className="w-9 h-9 object-cover rounded border border-border-tan flex-shrink-0 grayscale-[30%] hover:grayscale-0 transition-all"
                             />
                             <div className="min-w-0">
@@ -372,6 +375,7 @@ export const NowSpinningScreen: React.FC<NowSpinningScreenProps> = ({
                           <img 
                             src={track.coverUrl} 
                             alt="Cover" 
+                            referrerPolicy="no-referrer"
                             className="w-9 h-9 object-cover rounded border border-border-tan flex-shrink-0"
                           />
                           <div className="min-w-0">
@@ -433,6 +437,7 @@ export const NowSpinningScreen: React.FC<NowSpinningScreenProps> = ({
                             <img 
                               src={pl.coverUrl} 
                               alt="Cover" 
+                              referrerPolicy="no-referrer"
                               className="w-8 h-8 object-cover rounded border border-border-tan"
                             />
                             <div>
@@ -497,6 +502,7 @@ export const NowSpinningScreen: React.FC<NowSpinningScreenProps> = ({
                           <img 
                             src={track.coverUrl} 
                             alt="Cover" 
+                            referrerPolicy="no-referrer"
                             className="w-9 h-9 object-cover rounded border border-border-tan flex-shrink-0"
                           />
                           <div className="min-w-0">

@@ -156,6 +156,16 @@ export const PersistentPlayer: React.FC<PersistentPlayerProps> = ({
     setAudioVolume(isMuted ? 0 : volume / 100);
   }, [volume, isMuted]);
 
+  // Preload Next Track: Triggers background resolution and warm browser cache to make skips instant
+  useEffect(() => {
+    if (!currentTrack) return;
+    const nextTrack = queue[0] || autoplayQueue[0];
+    if (nextTrack && nextTrack.id && !nextTrack.id.startsWith("track-")) {
+      const trackId = nextTrack.id.replace("youtube:", "").replace("saavn:", "");
+      fetch(`/api/proxy/stream/${trackId}`).catch(() => {});
+    }
+  }, [currentTrack, queue, autoplayQueue]);
+
   // Timer simulation and playhead synchronization
   useEffect(() => {
     const updateProgress = () => {

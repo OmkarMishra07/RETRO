@@ -194,7 +194,7 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({
                       src={cd.coverUrl} 
                       alt={cd.title} 
                       referrerPolicy="no-referrer"
-                      className="w-11/12 h-11/12 object-cover rounded-xs opacity-95 group-hover:scale-105 transition-all"
+                      className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-11/12 h-11/12 object-cover rounded-xs opacity-95 group-hover:scale-105 transition-all"
                     />
                     <div className="absolute w-6 h-6 rounded-full bg-surface-container/60 cd-inner-ring border border-gray-400 flex items-center justify-center">
                       <div className="w-1.5 h-1.5 rounded-full bg-gray-600" />

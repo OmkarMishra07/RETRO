@@ -5,6 +5,7 @@ import { request as nodeRequest } from "http";
 import { request as httpRequest } from "https";
 import { Server } from "socket.io";
 import cors from "cors";
+import rateLimit from "express-rate-limit";
 import fs from "fs";
 import path from "path";
 import vm from "vm";
@@ -12,6 +13,7 @@ import { fileURLToPath } from "url";
 import dotenv from "dotenv";
 import ytSearch from "yt-search";
 import { Innertube, UniversalCache, Platform } from "youtubei.js";
+import { createClient } from "redis";
 
 // Inject JS evaluator for youtubei.js YTMUSIC deciphering in Node.js
 Platform.shim.eval = (data: any) => {
@@ -62,8 +64,72 @@ class ConcurrencyQueue {
 const ytDecipherQueue = new ConcurrencyQueue(10); // Limit to 10 parallel YouTube decipher operations
 const streamCache = new Map<string, { url: string, expiry: number }>();
 
-// API: Dual-Source Direct Stream URL Router
-async function getStreamUrlHelper(videoId: string): Promise<string> {
+// LRU Cache Helpers for in-memory Map
+function lruCacheGet(key: string) {
+  const val = streamCache.get(key);
+  if (val) {
+    streamCache.delete(key);
+    streamCache.set(key, val); // Move to end (most recently used)
+  }
+  return val;
+}
+
+function lruCacheSet(key: string, val: { url: string, expiry: number }) {
+  if (streamCache.has(key)) {
+    streamCache.delete(key);
+  } else if (streamCache.size >= 5000) { // Limit memory cache to 5,000 entries
+    const oldestKey = streamCache.keys().next().value;
+    if (oldestKey !== undefined) {
+      streamCache.delete(oldestKey);
+    }
+  }
+  streamCache.set(key, val);
+}
+
+// Redis Client setup (Hybrid Cache Provider)
+const redisUrl = process.env.REDIS_URL;
+let redisClient: any = null;
+let useRedis = false;
+
+if (redisUrl) {
+  redisClient = createClient({
+    url: redisUrl,
+    socket: {
+      // Retry up to 3 times then fail permanently to prevent loop spamming on dead local Redis servers
+      reconnectStrategy: (retries: number) => {
+        if (retries >= 3) {
+          console.warn("[redis] Connection failed 3 times. Disabling Redis provider fallback to memory.");
+          useRedis = false;
+          return false; // Stop retrying
+        }
+        return Math.min(retries * 200, 1000);
+      }
+    }
+  });
+  redisClient.on("error", (err: any) => {
+    // Only log error if Redis provider is active
+    if (useRedis) console.error("Redis Client Error:", err.message);
+  });
+  redisClient.connect()
+    .then(() => {
+      console.log("Connected to Redis successfully!");
+      useRedis = true;
+    })
+    .catch((err: any) => {
+      console.error("Failed to connect to Redis, falling back to In-Memory cache:", err.message);
+      useRedis = false;
+    });
+}
+
+const cacheStats = {
+  hits: 0,
+  misses: 0,
+  expired: 0,
+  refreshes: 0
+};
+
+// API: Dual-Source Direct Stream URL Router (Quality-aware: low/high)
+async function getStreamUrlHelper(videoId: string, quality: string = "high"): Promise<string> {
   const isSaavn = videoId.startsWith("saavn:");
   const isYouTube = videoId.startsWith("youtube:");
   const actualId = videoId.replace("saavn:", "").replace("youtube:", "");
@@ -114,11 +180,13 @@ async function getStreamUrlHelper(videoId: string): Promise<string> {
         throw new Error(`No streaming_data for ${actualId}`);
       }
 
-      const format = info.chooseFormat({ type: 'audio', quality: 'best' });
+      // Adaptive Quality choice: worst (128kbps or lower) for low networks, best for high speed
+      const format = info.chooseFormat({ type: 'audio', quality: quality === 'low' ? 'worst' : 'best' });
       if (!format) {
         throw new Error(`No audio format found for ${actualId}`);
       }
 
+      console.log(`[decipher-debug] id=${actualId} has_sig=${!!(format.signature_cipher || format.cipher)} player_exists=${!!yt.session.player}`);
       const streamUrl = format.signature_cipher || format.cipher
         ? await format.decipher(yt.session.player)
         : format.url;
@@ -132,16 +200,160 @@ async function getStreamUrlHelper(videoId: string): Promise<string> {
   }
 }
 
-// Get from cache, or decipher and cache for 4 hours
-async function getOrDecipherStreamUrl(videoId: string): Promise<string> {
+const inFlightDeciphers = new Map<string, Promise<string>>();
+
+// Background Refresh Trigger: Asynchronously deciphers a fresh URL if the current one is close to expiring
+function triggerBackgroundRefreshIfNeeded(videoId: string, expiry: number, quality: string = "high") {
   const now = Date.now();
-  const cached = streamCache.get(videoId);
-  if (cached && cached.expiry > now) {
-    return cached.url;
+  const timeRemaining = expiry - now;
+  const cacheKey = `${videoId}:${quality}`;
+
+  // Trigger refresh if url expires in less than 20 minutes and is not currently in-flight
+  if (timeRemaining < 20 * 60 * 1000 && !inFlightDeciphers.has(cacheKey)) {
+    cacheStats.refreshes++;
+    console.log(`[cache-refresh] Triggering background cache refresh for ${cacheKey} (${Math.round(timeRemaining / 60000)} mins remaining)`);
+    const promise = getStreamUrlHelper(videoId, quality).then(async (url) => {
+      const urlObj = new URL(url);
+      const expireSecs = parseInt(urlObj.searchParams.get("expire") || "0", 10);
+      const actualExpireMs = expireSecs * 1000;
+      
+      // Cache expires 5 minutes before actual YouTube URL expiration, defaulting to 4 hours if missing
+      const cacheExpireMs = actualExpireMs > 0
+        ? actualExpireMs - 5 * 60 * 1000
+        : Date.now() + 4 * 60 * 60 * 1000;
+
+      lruCacheSet(cacheKey, { url, expiry: cacheExpireMs });
+      
+      if (useRedis && redisClient) {
+        try {
+          // Increment play/resolve count in Redis
+          const plays = await redisClient.incr(`plays:${videoId}`);
+          if (plays === 1) {
+            await redisClient.expire(`plays:${videoId}`, 24 * 60 * 60);
+          }
+
+          // Smart Song Popularity: Popular songs (5+ play count) get a 12-hour expiration boost
+          const boostMs = plays >= 5 ? 12 * 60 * 60 * 1000 : 0;
+          const finalExpiryMs = cacheExpireMs + boostMs;
+          const ttlSecs = Math.max(Math.floor((finalExpiryMs - Date.now()) / 1000), 60);
+
+          await redisClient.set(
+            `stream:${videoId}:${quality}`,
+            JSON.stringify({ url, expiry: finalExpiryMs }),
+            { EX: ttlSecs }
+          );
+        } catch (err: any) {
+          console.warn("[redis] Background write failed:", err.message);
+        }
+      }
+
+      inFlightDeciphers.delete(cacheKey);
+      return url;
+    }).catch(err => {
+      inFlightDeciphers.delete(cacheKey);
+      console.warn(`[cache-refresh] Background refresh failed for ${cacheKey}:`, err.message);
+      throw err;
+    });
+
+    inFlightDeciphers.set(cacheKey, promise);
   }
-  const streamUrl = await getStreamUrlHelper(videoId);
-  streamCache.set(videoId, { url: streamUrl, expiry: now + 4 * 60 * 60 * 1000 });
-  return streamUrl;
+}
+
+// Get from cache (Redis or Memory), or decipher and cache for 4 hours (with Promise deduplication / request coalescing)
+async function getOrDecipherStreamUrl(videoId: string, quality: string = "high"): Promise<string> {
+  const now = Date.now();
+  const cacheKey = `${videoId}:${quality}`;
+
+  // 1. Try to read from shared Redis cache first
+  if (useRedis && redisClient) {
+    try {
+      const val = await redisClient.get(`stream:${videoId}:${quality}`);
+      if (val) {
+        let url = val;
+        let expiry = now + 4 * 60 * 60 * 1000;
+
+        // Parse JSON object if stored in new format
+        if (val.startsWith("{")) {
+          const parsed = JSON.parse(val);
+          url = parsed.url;
+          expiry = parsed.expiry;
+        }
+
+        if (expiry > now) {
+          cacheStats.hits++;
+          triggerBackgroundRefreshIfNeeded(videoId, expiry, quality);
+          return url;
+        } else {
+          cacheStats.expired++;
+        }
+      }
+    } catch (err: any) {
+      console.warn("[redis] Cache read failed, falling back to memory:", err.message);
+    }
+  }
+
+  // 2. Fall back to local in-memory Map
+  const cached = lruCacheGet(cacheKey);
+  if (cached && cached.expiry > now) {
+    cacheStats.hits++;
+    triggerBackgroundRefreshIfNeeded(videoId, cached.expiry, quality);
+    return cached.url;
+  } else if (cached) {
+    cacheStats.expired++;
+  }
+
+  cacheStats.misses++;
+
+  // 3. Manage in-flight promises to coalescing parallel requests
+  let promise = inFlightDeciphers.get(cacheKey);
+  if (!promise) {
+    promise = getStreamUrlHelper(videoId, quality).then(async (url) => {
+      const urlObj = new URL(url);
+      const expireSecs = parseInt(urlObj.searchParams.get("expire") || "0", 10);
+      const actualExpireMs = expireSecs * 1000;
+      
+      // Cache expires 5 minutes before actual YouTube URL expiration, defaulting to 4 hours if missing
+      const cacheExpireMs = actualExpireMs > 0
+        ? actualExpireMs - 5 * 60 * 1000
+        : Date.now() + 4 * 60 * 60 * 1000;
+
+      // Save to memory cache
+      lruCacheSet(cacheKey, { url, expiry: cacheExpireMs });
+
+      // Save to shared Redis cache (if active)
+      if (useRedis && redisClient) {
+        try {
+          // Increment play/resolve count in Redis
+          const plays = await redisClient.incr(`plays:${videoId}`);
+          if (plays === 1) {
+            await redisClient.expire(`plays:${videoId}`, 24 * 60 * 60);
+          }
+
+          // Smart Song Popularity: Popular songs (5+ play count) get a 12-hour expiration boost
+          const boostMs = plays >= 5 ? 12 * 60 * 60 * 1000 : 0;
+          const finalExpiryMs = cacheExpireMs + boostMs;
+          const ttlSecs = Math.max(Math.floor((finalExpiryMs - Date.now()) / 1000), 60);
+
+          await redisClient.set(
+            `stream:${videoId}:${quality}`,
+            JSON.stringify({ url, expiry: finalExpiryMs }),
+            { EX: ttlSecs }
+          );
+        } catch (err: any) {
+          console.warn("[redis] Cache write failed:", err.message);
+        }
+      }
+
+      inFlightDeciphers.delete(cacheKey);
+      return url;
+    }).catch(err => {
+      inFlightDeciphers.delete(cacheKey);
+      throw err;
+    });
+    inFlightDeciphers.set(cacheKey, promise);
+  }
+
+  return promise;
 }
 
 // Periodic garbage collection to prevent memory leaks from old cached links
@@ -176,6 +388,16 @@ const io = new Server(server, {
 
 app.use(cors());
 app.use(express.json());
+
+// API Rate Limiter (Protects backend from abuse, bots, and flooding)
+const apiLimiter = rateLimit({
+  windowMs: 60 * 1000, // 1 minute
+  max: 50, // Limit each IP to 50 requests per minute
+  standardHeaders: true, // Return standard RateLimit headers
+  legacyHeaders: false, // Disable legacy X-RateLimit headers
+  message: { error: "Too many requests, please try again in a minute." }
+});
+app.use("/api/", apiLimiter);
 
 // Firebase Auth Custom Domain Reverse Proxy
 // Proxies all /__/auth/* requests to Firebase to keep cookies and session storage first-party
@@ -471,7 +693,7 @@ app.get("/api/youtube/search", async (req, res) => {
             artist: item.artists?.[0]?.name ?? 'Unknown',
             album: item.album?.name ?? 'YouTube Music',
             duration: `${mm}:${ss}`,
-            coverUrl: item.thumbnail?.[0]?.url ?? "https://images.unsplash.com/photo-1614613535308-eb5fbd3d2c17",
+            coverUrl: item.thumbnail?.contents?.[0]?.url || item.thumbnails?.[0]?.url || "https://images.unsplash.com/photo-1614613535308-eb5fbd3d2c17",
             genre: "YT_MUSIC",
             audioUrl: item.id // No prefix needed, fallback logic handles routing
           };
@@ -499,10 +721,11 @@ app.get("/api/youtube/search", async (req, res) => {
 // API: Dual-Source Direct Stream URL Router (For direct JSON url responses)
 app.get("/api/youtube/stream/:videoId", async (req, res) => {
   const { videoId } = req.params;
+  const quality = req.query.quality === "low" ? "low" : "high";
   if (!videoId) return res.status(400).json({ error: "Missing videoId" });
 
   try {
-    const streamUrl = await getOrDecipherStreamUrl(videoId);
+    const streamUrl = await getOrDecipherStreamUrl(videoId, quality);
     res.json({ success: true, url: streamUrl });
   } catch (err: any) {
     console.error("Stream fetch error:", err.message);
@@ -513,13 +736,48 @@ app.get("/api/youtube/stream/:videoId", async (req, res) => {
 // API: Redirect the browser directly to YouTube's CDN (shifts 100% of bandwidth and streaming IPs to user)
 app.get('/api/proxy/stream/:videoId', async (req, res) => {
   const { videoId } = req.params;
+  const quality = req.query.quality === "low" ? "low" : "high";
   try {
-    const streamUrl = await getOrDecipherStreamUrl(videoId);
+    const streamUrl = await getOrDecipherStreamUrl(videoId, quality);
+    
+    // Calculate remaining cache lifetime dynamically to match browser cache to stream lifetime
+    let maxAgeSeconds = 4 * 60 * 60; // 4 hours default
+    try {
+      const urlObj = new URL(streamUrl);
+      const expireSecs = parseInt(urlObj.searchParams.get("expire") || "0", 10);
+      if (expireSecs > 0) {
+        const remainingSecs = expireSecs - Math.floor(Date.now() / 1000);
+        // Set max-age to expire 5 minutes before actual YouTube URL expires
+        maxAgeSeconds = Math.max(0, remainingSecs - 5 * 60);
+      }
+    } catch {
+      // Fallback
+    }
+
+    if (maxAgeSeconds > 0) {
+      res.setHeader('Cache-Control', `public, max-age=${maxAgeSeconds}`);
+    } else {
+      res.setHeader('Cache-Control', 'no-cache');
+    }
+
     res.redirect(302, streamUrl);
   } catch (err: any) {
     console.error(`[proxy] FAILED to get stream URL for ${videoId}:`, err.message);
     if (!res.headersSent) res.status(500).json({ error: err.message });
   }
+});
+
+// API: Cache Analytics & Statistics Monitor
+app.get("/api/cache/stats", (req, res) => {
+  res.json({
+    success: true,
+    stats: {
+      ...cacheStats,
+      inMemoryCacheSize: streamCache.size,
+      inFlightDeciphersCount: inFlightDeciphers.size,
+      useRedis
+    }
+  });
 });
 
 // API: Save Recently Played Song
@@ -814,6 +1072,59 @@ function startFirestoreCleanupListener() {
 // Start the listener
 startFirestoreCleanupListener();
 
+// Background Cache Warming: fetches popular user songs from Firestore and deciphers them on boot
+async function warmCacheFromFirestore() {
+  console.log("[cache-warming] Starting background cache warming from Firestore...");
+  try {
+    const usersCol = collection(firestoreDb, "users");
+    const querySnapshot = await getDocs(usersCol);
+    const popularIds = new Set<string>();
+
+    querySnapshot.forEach((docSnap) => {
+      const data = docSnap.data();
+      if (Array.isArray(data.recentlyPlayed)) {
+        data.recentlyPlayed.forEach((track: any) => {
+          if (track && track.id && track.id.length === 11) {
+            popularIds.add(track.id);
+          }
+        });
+      }
+      if (Array.isArray(data.likedTrackIds)) {
+        data.likedTrackIds.forEach((id: string) => {
+          if (id && id.length === 11) {
+            popularIds.add(id);
+          }
+        });
+      }
+    });
+
+    const idsToWarm = Array.from(popularIds).slice(0, 100);
+    console.log(`[cache-warming] Found ${idsToWarm.length} unique popular YouTube tracks. Scheduling slow background warm...`);
+
+    // Warm cache slowly (one song every 3 seconds) to avoid blocking the queue for real-time user requests
+    let index = 0;
+    const intervalId = setInterval(() => {
+      if (index >= idsToWarm.length) {
+        clearInterval(intervalId);
+        console.log("[cache-warming] Completed warming popular tracks.");
+        return;
+      }
+      const id = idsToWarm[index++];
+      getOrDecipherStreamUrl(id).catch(() => {});
+    }, 3000);
+  } catch (err: any) {
+    console.warn("[cache-warming] Failed to pre-warm cache on boot:", err.message);
+  }
+}
+
 server.listen(PORT, () => {
   console.log(`Music2D Backend server running on port ${PORT}`);
+  
+  // Pre-initialize YouTube client on server boot
+  getYT()
+    .then(() => console.log("[youtube] Pre-initialized Innertube client successfully."))
+    .catch((err) => console.warn("[youtube] Failed to pre-initialize Innertube client:", err.message));
+
+  // Asynchronously trigger cache warming on boot
+  warmCacheFromFirestore();
 });
